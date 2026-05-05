@@ -4,12 +4,54 @@ from datetime import datetime
 from typing import Optional
 
 
+# -- Cores ANSI --
+_COR = {
+    "reset":    "\033[0m",
+    "negrito":  "\033[1m",
+    "cinza":    "\033[90m",
+    "verde":    "\033[92m",
+    "amarelo":  "\033[93m",
+    "azul":     "\033[94m",
+    "magenta":  "\033[95m",
+    "ciano":    "\033[96m",
+    "vermelho": "\033[91m",
+    "branco":   "\033[97m",
+}
+
+_COR_PROTO = {
+    "ARP":    "amarelo",
+    "ICMP":   "ciano",
+    "ICMPV6": "ciano",
+    "TCP":    "verde",
+    "UDP":    "azul",
+    "HTTP":   "magenta",
+    "DNS":    "vermelho",
+    "DHCP":   "branco",
+    "IPv4":   "cinza",
+    "IPv6":   "cinza",
+}
+
+def _cor(nome: str) -> str:
+    return _COR.get(nome, "")
+
+
 # -- Helpers de formatacao --
 
 def _barra(pct: float, largura: int = 20) -> str:
-    """Barra de progresso ASCII proporcional à percentagem."""
+    """Barra de progresso com caracteres Unicode."""
     cheio = round(pct / 100 * largura)
-    return "#" * cheio + "-" * (largura - cheio)
+    return "█" * cheio + "░" * (largura - cheio)
+
+
+def _sparkline(valores: list, altura: int = 1) -> str:
+    """Gera sparkline a partir de lista de valores."""
+    if not valores:
+        return ""
+    max_val = max(valores) if valores else 1
+    if max_val == 0:
+        return " " * len(valores)
+    sparkchars = "▁▂▃▄▅▆▇█"
+    return "".join(sparkchars[min(7, int(v / max_val * 8))] for v in valores)
 
 
 def _fmt_bytes(b: int) -> str:
@@ -58,20 +100,20 @@ class TCPState:
             return " -> ".join(steps[:5]) + " -> ..."
         return " -> ".join(steps)
 
-    def summary_row(self, index: int) -> str:
+    def summary_card(self, index: int) -> dict:
         duration = (datetime.now() - self.start_time).total_seconds()
         dados = (
             f"{_fmt_bytes(self.bytes_client_to_server)} / "
             f"{_fmt_bytes(self.bytes_server_to_client)}"
         )
-        return (
-            f"  {index:>2} | "
-            f"{self.client:<22} -> {self.server:<22} | "
-            f"{self.state:<11} | "
-            f"{duration:>7.2f}s | "
-            f"{dados:<25} | "
-            f"{self.summary_steps()}"
-        )
+        return {
+            "index": index,
+            "flow": f"{self.client} -> {self.server}",
+            "state": self.state,
+            "duration": f"{duration:.2f}s",
+            "data": dados,
+            "events": self.summary_steps(),
+        }
 
     def transition(self, flags: str, src_endpoint: str,
                    timestamp: str, tcp_seq: Optional[int] = None,
@@ -688,11 +730,14 @@ class ProtocolAnalyzer:
 
     def _print_diagrams(self):
         L = 70
-        print("\n\n" + "=" * L)
-        print("  DIAGRAMAS DE PROTOCOLO -- reconstruidos da captura")
-        print("=" * L)
+        cor_header = _cor("ciano")
+        reset = _COR["reset"]
+        print(f"\n\n{cor_header}" + "=" * L + f"{reset}")
+        print(f"{cor_header}  DIAGRAMAS DE PROTOCOLO -- reconstruidos da captura{reset}")
+        print(f"{cor_header}" + "=" * L + f"{reset}")
 
         self._diag_tcp()
+        self._diag_udp()
         self._diag_arp()
         self._diag_icmp()
         self._diag_frag()
@@ -703,84 +748,119 @@ class ProtocolAnalyzer:
     # -- TCP --
 
     def _diag_tcp(self):
-        if not self.tcp_flows:
-            return
-        print("\n  + TCP - Three-Way Handshake & Ciclo de Vida +")
-        grupos = defaultdict(list)
-        for flow in self.tcp_flows.values():
-            grupos[flow.group_key()].append(flow)
+        cor = _cor(_COR_PROTO.get("TCP", "reset"))
+        
+        # Se há fluxos TCP rastreados
+        if self.tcp_flows:
+            grupos = defaultdict(list)
+            for flow in self.tcp_flows.values():
+                grupos[flow.group_key()].append(flow)
 
-        for (client_ip, server_ip, server_port), flows in sorted(
-            grupos.items(),
-            key=lambda item: (item[0][0], item[0][1], int(item[0][2]) if item[0][2].isdigit() else item[0][2]),
-        ):
-            flows = sorted(flows, key=lambda f: f.start_time)
-            titulo = f"{client_ip} <-> {server_ip}:{server_port}"
-            largura = max(110, len(titulo) + 24)
-            print(f"  +{'-'*largura}+")
-            print(f"  |  Grupo TCP : {titulo:<{largura-16}}|")
-            print(f"  |  Flows     : {len(flows):<{largura-16}}|")
-            print(f"  +{'-'*largura}+")
-            print(f"  |  {'#':<2} | {'Flow':<50} | {'Estado':<11} | {'Duracao':<9} | {'Dados':<25} | Eventos")
-            print(f"  +{'-'*2}+{'-'*52}+{'-'*13}+{'-'*11}+{'-'*27}+{'-'*24}+")
-            for idx, flow in enumerate(flows, 1):
-                print(f"  | {flow.summary_row(idx):<{largura-4}}|")
-            print(f"  +{'-'*largura}+")
-        print()
+            print(f"\n┌──────────────────────────────────────────────────────────┐")
+            print(f"│  {cor}TCP{_COR['reset']} - Fluxos de Conexão                              │")
+            print(f"├──────────────────────────┬──────────┬────────┬────────┤")
+            print(f"│  Fluxo                   │  Estado  │  Tempo │ Dados  │")
+            print(f"├──────────────────────────┼──────────┼────────┼────────┤")
+            
+            for (client_ip, server_ip, server_port), flows in sorted(grupos.items()):
+                for flow in sorted(flows, key=lambda f: f.start_time):
+                    card = flow.summary_card(1)
+                    estado = card['state'][:8].ljust(8)
+                    tempo = card['duration'][:6].ljust(6)
+                    dados = card['data'][:6].ljust(6)
+                    fluxo_str = f"{client_ip}→{server_ip}:{server_port}"[:24].ljust(24)
+                    print(f"│ {fluxo_str} │ {estado} │ {tempo} │ {dados} │")
+            
+            print(f"└──────────────────────────┴──────────┴────────┴────────┘")
+        else:
+            # Fallback: mostrar fluxos TCP de _flow_stats
+            tcp_flows = [(k, v) for k, v in self._flow_stats.items() if k[2] == "TCP"]
+            if tcp_flows:
+                print(f"\n┌──────────────────────────────────────────────────────────┐")
+                print(f"│  {cor}TCP{_COR['reset']} - Fluxos Observados                           │")
+                print(f"├────────────────────────────────────┬───────┬──────────┤")
+                print(f"│  Fluxo                             │ Pkts  │  Bytes   │")
+                print(f"├────────────────────────────────────┼───────┼──────────┤")
+                
+                for (src, dst, proto), stats in sorted(tcp_flows, key=lambda x: -x[1]["pkts"]):
+                    fluxo_str = f"{src}→{dst}"[:34].ljust(34)
+                    print(f"│ {fluxo_str} │ {stats['pkts']:>5} │ {_fmt_bytes(stats['bytes']):>8} │")
+                
+                print(f"└────────────────────────────────────┴───────┴──────────┘")
+
+    # -- UDP --
+
+    def _diag_udp(self):
+        # Filtrar fluxos UDP do _flow_stats
+        udp_flows = [(k, v) for k, v in self._flow_stats.items() if k[2] == "UDP"]
+        if not udp_flows:
+            return
+        
+        cor = _cor(_COR_PROTO.get("UDP", "reset"))
+        
+        print(f"\n┌──────────────────────────────────────────────────────────┐")
+        print(f"│  {cor}UDP{_COR['reset']} - Fluxos de Datagramas                            │")
+        print(f"├────────────────────────────────────┬───────┬──────────┤")
+        print(f"│  Fluxo                             │ Pkts  │  Bytes   │")
+        print(f"├────────────────────────────────────┼───────┼──────────┤")
+        
+        for (src, dst, proto), stats in sorted(udp_flows, key=lambda x: -x[1]["pkts"]):
+            fluxo_str = f"{src}→{dst}"[:34].ljust(34)
+            print(f"│ {fluxo_str} │ {stats['pkts']:>5} │ {_fmt_bytes(stats['bytes']):>8} │")
+        
+        print(f"└────────────────────────────────────┴───────┴──────────┘")
 
     # -- ARP --
 
     def _diag_arp(self):
         if not self.arp_completed and not self.arp_table:
             return
-        L = 62
-        print("\n  + ARP - Ciclo Request / Reply +")
+        
+        cor = _cor(_COR_PROTO.get("ARP", "reset"))
+        print(f"\n┌──────────────────────────────────────────────────────────┐")
+        print(f"│  {cor}ARP{_COR['reset']} - Resolução de Endereços                         │")
+        print(f"├────────────────────────────────┬────────────────────────┤")
+        print(f"│  Endereço IP                   │  Endereço MAC          │")
+        print(f"├────────────────────────────────┼────────────────────────┤")
+        
         for src_ip, src_mac, dst_ip, ts in self.arp_completed:
-            print(f"  | +{'-'*L}+")
-            print(f"  | |  ARP Exchange  {ts:<{L-16}}|")
-            print(f"  | +{'-'*L}+")
-            print(f"  | |  {src_ip} ---- Request (broadcast) ---------> ff:ff:ff:ff:ff:ff  |")
-            print(f"  | |  {src_ip} <--- Reply ---------------------  {src_mac:<19}|")
-            print(f"  | |  Resultado : {src_ip} esta em {src_mac:<{L-35}}|")
-            print(f"  | +{'-'*L}+")
+            print(f"│ {src_ip:<30} │ {src_mac:<22} │")
+        
         if self.arp_table:
-            print("  |")
-            print(f"  |  Tabela ARP observada:")
-            for ip, mac in self.arp_table.items():
-                print(f"  |    {ip:<18} ->  {mac}")
-        print()
+            for ip, mac in sorted(self.arp_table.items()):
+                print(f"│ {ip:<30} │ {mac:<22} │")
+        
+        print(f"└────────────────────────────────┴────────────────────────┘")
 
     # -- ICMP --
 
     def _diag_icmp(self):
         if not self.icmp_completed and not self.icmp_sessions:
             return
-        L = 62
-        print("\n  + ICMP - Ciclo Echo Request / Reply (ping) +")
-
+        
+        cor = _cor(_COR_PROTO.get("ICMP", "reset"))
+        
         # Agrupar por (src, dst, icmp_id)
-        grupos: dict = {}
+        grupos = {}
         for src, dst, icmp_id, seq, ts in self.icmp_completed:
             k = (src, dst, icmp_id)
             grupos.setdefault(k, []).append(seq)
 
-        for (src, dst, icmp_id), seqs in grupos.items():
-            print(f"  |  +{'-'*L}+")
-            print(f"  |  |  ICMP Session  {src} -> {dst}  id={icmp_id:<{L-40}}|")
-            print(f"  |  +{'-'*L}+")
-            for seq in sorted(set(seqs)):
-                print(f"  |  |  seq={seq:<5}  {src} ---- Echo Request ----> {dst:<{L-50}}|")
-                print(f"  |  |  seq={seq:<5}  {src} <--- Echo Reply  ------ {dst:<{L-50}}|")
-            total  = len(seqs)
-            perdas = len([k for k in self.icmp_sessions if k[0]==src and k[2]==icmp_id])
-            print(f"  |  |  Respostas: {total}/{total+perdas}   Perdas: {perdas:<{L-30}}|")
-            print(f"  |  +{'-'*L}+")
+        print(f"\n┌──────────────────────────────────────────────────────────┐")
+        print(f"│  {cor}ICMP{_COR['reset']} Echo - Request/Reply                           │")
+        print(f"├────────────────────────────────┬─────────┬────────────┤")
+        print(f"│  Fluxo                         │ Seqs    │ Respostas  │")
+        print(f"├────────────────────────────────┼─────────┼────────────┤")
 
-        if self.icmp_sessions:
-            print(f"  |  Requests sem Reply ({len(self.icmp_sessions)}):")
-            for (src, dst, icmp_id), ts in list(self.icmp_sessions.items())[:5]:
-                print(f"  |    {src} -> {dst}  id={icmp_id}  ts={ts}")
-        print()
+        for (src, dst, icmp_id), seqs in sorted(grupos.items()):
+            total = len(seqs)
+            perdas = len([k for k in self.icmp_sessions if k[0]==src and k[2]==icmp_id])
+            fluxo_str = f"{src}→{dst} id={icmp_id}"[:30].ljust(30)
+            seq_str = f"{len(set(seqs))}"[:7].ljust(7)
+            resp_str = f"{total}/{total+perdas}"[:10].ljust(10)
+            print(f"│ {fluxo_str} │ {seq_str} │ {resp_str} │")
+        
+        print(f"└────────────────────────────────┴─────────┴────────────┘")
 
     # -- Fragmentacao IP --
 
@@ -789,65 +869,69 @@ class ProtocolAnalyzer:
         pending   = self.frag_tracker.pending_count()
         if not completed and not pending:
             return
-        L = 62
-        print("\n  + IP - Fragmentacao de Datagramas +")
-        for d in completed:
-            print(f"  |  +{'-'*L}+")
-            print(f"  |  |  Datagrama id={d['frag_id']}  {d['src']} -> {d['dst']:<{L-40}}|")
-            print(f"  |  +{'-'*12}+{'-'*10}+{'-'*8}+{'-'*(L-35)}+")
-            print(f"  |  |  {'Fragmento':<12}|  {'Offset':<8}|  {'Bytes':<6}|  {'Flags':<{L-37}}|")
-            print(f"  |  +{'-'*12}+{'-'*10}+{'-'*8}+{'-'*(L-35)}+")
-            frags = sorted(d["fragments"], key=lambda x: x[0])
-            for i, (offset, size, mf) in enumerate(frags, 1):
-                flag_str = "MF=1 (mais fragmentos)" if mf else "MF=0 (ultimo)"
-                print(f"  |  |  #{i:<11}|  {offset:<8}|  {size:<6}|  {flag_str:<{L-37}}|")
-            print(f"  |  +{'-'*12}+{'-'*10}+{'-'*8}+{'-'*(L-35)}+")
-            print(f"  |  |  Total: {d['n']} fragmentos   Dados: ~{_fmt_bytes(d['total'])}   Status: COMPLETO  |")
-            print(f"  |  +{'-'*L}+")
+        
+        cor = _cor(_COR_PROTO.get("IPv4", "reset"))
+        print(f"\n┌──────────────────────────────────────────────────────────┐")
+        print(f"│  {cor}IP{_COR['reset']} - Fragmentação de Datagramas                     │")
+        print(f"├───────┬────────────────────────┬────────┬──────────────┤")
+        print(f"│  ID   │  Fluxo                 │  Frags │  Total Bytes │")
+        print(f"├───────┼────────────────────────┼────────┼──────────────┤")
+        
+        for d in sorted(completed, key=lambda x: x['frag_id']):
+            fluxo_str = f"{d['src']}→{d['dst']}"[:22].ljust(22)
+            print(f"│ {d['frag_id']:<5} │ {fluxo_str} │ {d['n']:>6} │ {_fmt_bytes(d['total']):>12} │")
+        
+        print(f"└───────┴────────────────────────┴────────┴──────────────┘")
+        
         if pending:
-            print(f"  |  Datagramas incompletos no fim da captura: {pending}")
-        print()
+            print(f"  ⚠  {pending} datagrama(s) incompleto(s) no fim da captura")
 
     # -- HTTP --
 
     def _diag_http(self):
         if self.http_tracker.paired == 0:
             return
-        print("\n  +- HTTP - Pares Request / Response -----+")
-        print(f"  |  Pares completos observados: {self.http_tracker.paired}")
-        print(f"  |  (Conteudo detalhado disponivel no ficheiro de log)")
-        print(f"  |")
-        print(f"  |  Cliente ---- GET/POST /path HTTP/1.x ----> Servidor :80")
-        print(f"  |  Cliente <--- HTTP/1.x 200 OK ----------- Servidor :80")
-        print()
+        cor = _cor(_COR_PROTO.get("HTTP", "reset"))
+        print(f"\n┌──────────────────────────────────────────────────────────┐")
+        print(f"│  {cor}HTTP{_COR['reset']} - Pares Request/Response                       │")
+        print(f"├──────────────────────────────────────────────────────────┤")
+        print(f"│  Pares completos: {self.http_tracker.paired:<44}│")
+        print(f"├──────────────────────────────────────────────────────────┤")
+        print(f"│  Cliente ---- GET/POST /path HTTP/1.x ----→ Servidor     │")
+        print(f"│  Cliente ←---- HTTP/1.x 200 OK ---------- Servidor       │")
+        print(f"└──────────────────────────────────────────────────────────┘")
 
     # -- DNS --
 
     def _diag_dns(self):
         if self.dns_tracker.paired == 0:
             return
-        print("\n  +- DNS - Ciclo Query / Response -----+")
-        print(f"  |  Pares completos observados: {self.dns_tracker.paired}")
-        print(f"  |  (Nota: analise de estado DNS fora do ambito desta entrega)")
-        print(f"  |")
-        print(f"  |  Cliente ---- Query  (tipo A / AAAA / ...) ---> Resolver :53")
-        print(f"  |  Cliente <--- Response (NOERROR / NXDOMAIN) -- Resolver :53")
-        print()
+        cor = _cor(_COR_PROTO.get("DNS", "reset"))
+        print(f"\n┌──────────────────────────────────────────────────────────┐")
+        print(f"│  {cor}DNS{_COR['reset']} - Ciclo Query/Response                          │")
+        print(f"├──────────────────────────────────────────────────────────┤")
+        print(f"│  Pares completos: {self.dns_tracker.paired:<44}│")
+        print(f"├──────────────────────────────────────────────────────────┤")
+        print(f"│  Cliente ---- Query (tipo A/AAAA/...) ----→ Resolver     │")
+        print(f"│  Cliente ←---- Response (NOERROR/NXDOMAIN) - Resolver    │")
+        print(f"└──────────────────────────────────────────────────────────┘")
 
     # -- DHCP --
 
     def _diag_dhcp(self):
         if self.dhcp_tracker.completed == 0:
             return
-        print("\n  +- DHCP - Sequencia DORA -----+")
-        print(f"  |  Sequencias DORA completas: {self.dhcp_tracker.completed}")
-        print(f"  |  (Nota: analise de estado DHCP fora do ambito desta entrega)")
-        print(f"  |")
-        print(f"  |  Cliente ---- Discover (broadcast) ---------> :67")
-        print(f"  |  Cliente <--- Offer    (IP oferecido) ------ Servidor")
-        print(f"  |  Cliente ---- Request  (aceita oferta) -----> Servidor")
-        print(f"  |  Cliente <--- ACK      (IP atribuido) ------ Servidor")
-        print()
+        cor = _cor(_COR_PROTO.get("DHCP", "reset"))
+        print(f"\n┌──────────────────────────────────────────────────────────┐")
+        print(f"│  {cor}DHCP{_COR['reset']} - Sequência DORA                                 │")
+        print(f"├──────────────────────────────────────────────────────────┤")
+        print(f"│  Sequências DORA completas: {self.dhcp_tracker.completed:<38}│")
+        print(f"├──────────────────────────────────────────────────────────┤")
+        print(f"│  1. Cliente ---- Discover (broadcast) -------→ Servidor  │")
+        print(f"│  2. Cliente ←---- Offer (IP oferecido) ------ Servidor   │")
+        print(f"│  3. Cliente ---- Request (aceita oferta) ---→ Servidor   │")
+        print(f"│  4. Cliente ←---- ACK (IP atribuído) ------- Servidor    │")
+        print(f"└──────────────────────────────────────────────────────────┘")
 
     # ====================================================================
     # RESUMO GERAL
@@ -878,24 +962,26 @@ class ProtocolAnalyzer:
         total_bytes = sum(v["bytes"] for v in self._proto_stats.values())
         duracao     = time.monotonic() - self._capture_start
 
-        print("\n  DISTRIBUICAO DE TRAFEGO")
-        print(f"  {'-'*66}")
-        print(f"  {'Protocolo':<12} {'Pkts':>7} {'Bytes':>10} {'Distribuicao':<24} {'%':>5}")
-        print(f"  {'-'*66}")
-
+        print("\n┌──────────────────────────────────────────────────────────┐")
+        print("│  DISTRIBUIÇÃO DE TRÁFEGO                                  │")
+        print("├─────────────┬────────┬──────────┬────────────────────────┤")
+        print("│  Protocolo  │  Pkts  │  Bytes   │  Distribuição          │")
+        print("├─────────────┼────────┼──────────┼────────────────────────┤")
+        
         for proto, v in sorted(self._proto_stats.items(), key=lambda x: -x[1]["pkts"]):
-            pct   = v["pkts"] / total_pkts * 100 if total_pkts else 0
-            barra = _barra(pct, 20)
-            print(f"  {proto:<12} {v['pkts']:>7} {_fmt_bytes(v['bytes']):>10}  {barra}  {pct:>4.1f}%")
-
-        print(f"  {'-'*66}")
-        print(f"  {'TOTAL':<12} {total_pkts:>7} {_fmt_bytes(total_bytes):>10}")
-        print(f"  Duracao: {duracao:.1f}s   Debito medio: {total_pkts/duracao:.1f} pkt/s" if duracao > 0 else "")
-
-        # Protocolo dominante
+            pct = v["pkts"] / total_pkts * 100 if total_pkts else 0
+            cor = _cor(_COR_PROTO.get(proto, "reset"))
+            barra = _barra(pct, 14)
+            proto_display = f"{cor}{proto:<11}{_COR['reset']}"
+            print(f"│ {proto_display} │ {v['pkts']:>6} │ {_fmt_bytes(v['bytes']):>8} │ {barra}  {pct:>5.1f}%   │")
+        
+        print("├─────────────┴────────┴──────────┴────────────────────────┤")
+        print(f"│  Total: {total_pkts} pacotes  │  {_fmt_bytes(total_bytes):>8}  │  Duração: {duracao:.1f}s        │")
         dominante = max(self._proto_stats, key=lambda k: self._proto_stats[k]["pkts"])
-        pct_dom   = self._proto_stats[dominante]["pkts"] / total_pkts * 100
-        print(f"  Protocolo dominante: {dominante} ({pct_dom:.1f}%)")
+        pct_dom = self._proto_stats[dominante]["pkts"] / total_pkts * 100
+        cor_dom = _cor(_COR_PROTO.get(dominante, "reset"))
+        print(f"│  Protocolo dominante: {cor_dom}{dominante}{_COR['reset']} ({pct_dom:.1f}%){'':43}│")
+        print("└──────────────────────────────────────────────────────────┘")
 
     # -- Top flows --
 
@@ -903,13 +989,19 @@ class ProtocolAnalyzer:
         if not self._flow_stats:
             return
         top5 = sorted(self._flow_stats.items(), key=lambda x: -x[1]["pkts"])[:5]
-        print("\n  TOP 5 FLOWS (por pacotes)")
-        print(f"  {'-'*66}")
-        print(f"  {'#':<3} {'Flow':<42} {'Pkts':>6} {'Bytes':>10}")
-        print(f"  {'-'*66}")
+        
+        print("\n┌──────────────────────────────────────────────────────────┐")
+        print("│  TOP 5 FLOWS (por volume de pacotes)                      │")
+        print("├────┬──────────────────────────────┬───────┬──────────────┤")
+        print("│ #  │  Flow                        │ Pkts  │  Bytes       │")
+        print("├────┼──────────────────────────────┼───────┼──────────────┤")
+        
         for i, ((src, dst, proto), v) in enumerate(top5, 1):
-            flow_str = f"{src} -> {dst} [{proto}]"
-            print(f"  {i:<3} {flow_str:<42} {v['pkts']:>6} {_fmt_bytes(v['bytes']):>10}")
+            cor = _cor(_COR_PROTO.get(proto, "reset"))
+            flow_display = f"{src} → {dst}"[:28].ljust(28)
+            print(f"│ {i:>2} │ {flow_display} │ {v['pkts']:>5} │ {_fmt_bytes(v['bytes']):>12} │")
+        
+        print("└────┴──────────────────────────────┴───────┴──────────────┘")
 
     # -- Timeline --
 
@@ -924,22 +1016,14 @@ class ProtocolAnalyzer:
         pico_t = counts.index(pico)
         media  = sum(counts) / len(counts) if counts else 0
 
-        print("\n  TIMELINE DE ACTIVIDADE")
-        print(f"  Janela: 0s -> {max_t}s")
-        print(f"  {'-'*66}")
-        print(f"  {'Segundo':>8} {'Pkts':>6}  {'Grafico':<20}")
-        print(f"  {'-'*66}")
-        for segundo, total in enumerate(counts):
-            if total == 0:
-                continue
-            if pico:
-                cheio = max(1, round(total / pico * 20))
-            else:
-                cheio = 1
-            barra = "#" * cheio + "-" * (20 - cheio)
-            print(f"  {segundo:>8}s {total:>6}  {barra}")
-        print(f"  {'-'*66}")
-        print(f"  Pico: {pico} pkt/s em t={pico_t}s    Media: {media:.1f} pkt/s")
+        print("\n┌──────────────────────────────────────────────────────────┐")
+        print("│  TIMELINE DE ACTIVIDADE  (pacotes por segundo)            │")
+        print("├──────────────────────────────────────────────────────────┤")
+        
+        spark = _sparkline(counts)
+        print(f"│  {0:>2}s  {spark}  {max_t:<2}s     │")
+        print(f"│       pico: {_cor('vermelho')}{pico} pkt/s{_COR['reset']} @ t={pico_t}s   média: {media:.1f} pkt/s{'':>11}│")
+        print("└──────────────────────────────────────────────────────────┘")
 
     # -- Metricas TCP --
 
@@ -952,83 +1036,115 @@ class ProtocolAnalyzer:
             if f.state == TCPState.ESTABLISHED
         )
 
-        print("\n  METRICAS TCP")
-        print(f"  {'-'*66}")
-        print(f"  Ligações estabelecidas    : {self.summary_data['tcp_connections']}")
-        print(f"  Ligações com RST          : {self._rst_count}")
-        print(f"  Ligações ainda abertas    : {abertas}")
-        print(f"  Pares HTTP request/resp.  : {self.http_tracker.paired}")
+        cor_ok = _cor("verde")
+        cor_warn = _cor("amarelo")
+        reset = _COR["reset"]
 
+        print("\n┌──────────────────────────────────────────────────────────┐")
+        print("│  MÉTRICAS TCP                                             │")
+        print("├──────────────────────────────────────────────────────────┤")
+        
+        conexoes = self.summary_data['tcp_connections']
+        print(f"│  Ligações estabelecidas    :   {cor_ok}{conexoes}{reset:<34}│")
+        if self._rst_count > 0:
+            print(f"│  Ligações com RST          :   {cor_warn}{self._rst_count}{reset}  (encerramento abrupto){'':21}│")
+        else:
+            print(f"│  Ligações com RST          :   {cor_ok}0{reset}{'':48}│")
+        if abertas > 0:
+            print(f"│  Ligações ainda abertas    :   {cor_warn}{abertas}{reset}  (sem FIN/RST observado){'':18}│")
+        else:
+            print(f"│  Ligações ainda abertas    :   {cor_ok}0{reset}{'':48}│")
+        
         if self._win_samples:
-            print(f"  Janela TCP - min: {_fmt_bytes(min(self._win_samples))}"
-                  f"  max: {_fmt_bytes(max(self._win_samples))}"
-                  f"  media: {_fmt_bytes(int(sum(self._win_samples)/len(self._win_samples)))}")
-
+            min_w = _fmt_bytes(min(self._win_samples))
+            max_w = _fmt_bytes(max(self._win_samples))
+            med_w = _fmt_bytes(int(sum(self._win_samples)/len(self._win_samples)))
+            print(f"│                                                          │")
+            print(f"│  Janelas efectivas observadas:                           │")
+            print(f"│    Mínima  :   {min_w:<44}│")
+            print(f"│    Máxima  :   {max_w:<44}│")
+            print(f"│    Média   :   {med_w:<44}│")
+        
         if self._port_counter:
             _PORT_NAMES = {80:"HTTP", 443:"HTTPS", 22:"SSH", 21:"FTP",
                            25:"SMTP", 23:"Telnet", 53:"DNS", 8080:"HTTP-alt"}
-            print(f"  Portas destino mais usadas:")
-            for porta, n in self._port_counter.most_common(5):
+            print(f"│                                                          │")
+            print(f"│  Portas de destino mais usadas:                          │")
+            for porta, n in self._port_counter.most_common(3):
                 nome = _PORT_NAMES.get(porta, "")
-                print(f"    :{porta:<6} {nome:<10} -> {n} ligacoes")
+                cor_porta = _cor(_COR_PROTO.get(nome.upper(), "reset")) if nome else ""
+                desc = " (TLS — conteúdo opaco)" if porta == 443 else ""
+                espacos = " " * (24 - len(desc) - len(str(n)))
+                print(f"│    :{porta:<3}  {cor_porta}{nome:<6}{reset}  →  {n} ligações{desc}{espacos}│")
+        
+        print("└──────────────────────────────────────────────────────────┘")
 
     # -- Hosts observados --
 
     def _resumo_hosts(self):
         if not self._seen_ips:
             return
-        print(f"\n  HOSTS OBSERVADOS ({len(self._seen_ips)} IPs unicos)")
-        print(f"  {'-'*66}")
-        print(f"  {'IP':<22} {'MAC (via ARP)':<22}")
-        print(f"  {'-'*66}")
+        
+        print("\n┌──────────────────────────────────────────────────────────┐")
+        print("│  HOSTS OBSERVADOS                                         │")
+        print("├──────────────────────────────┬───────────────────────────┤")
+        print("│  IP                          │  MAC (via ARP)             │")
+        print("├──────────────────────────────┼───────────────────────────┤")
+        
         for ip in sorted(self._seen_ips):
-            mac = self.arp_table.get(ip, "-")
-            print(f"  {ip:<22} {mac:<22}")
+            mac = self.arp_table.get(ip, "—")
+            print(f"│  {ip:<28} │  {mac:<23} │")
+        
+        print("└──────────────────────────────┴───────────────────────────┘")
 
     # -- Diagnostico --
 
     def _resumo_diagnostico(self):
-        print("\n  DIAGNOSTICO DE REDE")
-        print(f"  {'-'*66}")
+        cor_ok = _cor("verde")
+        cor_warn = _cor("amarelo")
+        cor_info = _cor("ciano")
+        reset = _COR["reset"]
 
+        print("\n┌──────────────────────────────────────────────────────────┐")
+        print("│  DIAGNÓSTICO DE REDE                                      │")
+        print("├──────────────────────────────────────────────────────────┤")
+        
         # ARP
         if not self.arp_pending:
-            print("  [OK]   ARP - todas as trocas completas (sem requests sem reply)")
+            print(f"│  {cor_ok}[OK]{reset}   ARP cache estável — sem conflitos IP/MAC          │")
         else:
-            print(f"  [WARN] ARP - {len(self.arp_pending)} request(s) sem reply")
+            print(f"│  {cor_warn}[WARN]{reset} ARP - {len(self.arp_pending)} request(s) sem reply{' ':37}│")
 
         # Fragmentação
         pendentes = self.frag_tracker.pending_count()
         completos = len(self.frag_tracker.frag_completed)
         if pendentes == 0 and completos > 0:
-            print(f"  [OK]   Fragmentacao IP - {completos} datagrama(s) completos")
+            print(f"│  {cor_ok}[OK]{reset}   Fragmentação IP — todos os datagramas completos   │")
         elif pendentes == 0:
-            print("  [OK]   Fragmentacao IP - sem fragmentos observados")
+            print(f"│  {cor_ok}[OK]{reset}   Fragmentação IP — sem fragmentos observados       │")
         else:
-            print(f"  [WARN] Fragmentacao IP - {pendentes} datagrama(s) incompletos no fim da captura")
+            print(f"│  {cor_warn}[WARN]{reset} Fragmentação IP — {pendentes} datagrama(s) incompletos{' ':25}│")
 
         # TCP RST
         if self._rst_count == 0:
-            print("  [OK]   TCP - sem ligacoes terminadas por RST")
+            print(f"│  {cor_ok}[OK]{reset}   TCP — sem ligações terminadas por RST             │")
         else:
-            print(f"  [WARN] TCP - {self._rst_count} ligacao(oes) terminada(s) por RST (encerramento abrupto)")
+            print(f"│  {cor_warn}[WARN]{reset} {self._rst_count} ligação(ões) TCP encerrada(s) por RST{' ':30}│")
 
         # ICMP sem reply
         sem_reply = len(self.icmp_sessions)
         if sem_reply == 0:
-            print("  [OK]   ICMP - todos os Echo Requests tem Reply")
+            print(f"│  {cor_ok}[OK]{reset}   ICMP — todos os Echo Requests têm Reply           │")
         else:
-            print(f"  [WARN] ICMP - {sem_reply} Echo Request(s) sem Reply correspondente")
+            print(f"│  {cor_warn}[WARN]{reset} {sem_reply} ICMP Requests sem Reply correspondente{' ':26}│")
 
         # Ligações TCP abertas
         abertas = sum(1 for f in self.tcp_flows.values() if f.state == TCPState.ESTABLISHED)
         if abertas:
-            print(f"  [INFO] TCP - {abertas} ligacao(oes) ainda abertas no fim da captura")
+            print(f"│  {cor_info}[INFO]{reset} {abertas} ligação TCP ainda aberta no fim da captura{' ':24}│")
 
         # HTTPS
         if self._port_counter.get(443, 0) > 0:
-            print("  [INFO] Trafego HTTPS detectado - payloads cifrados (TLS)")
-
-        # DNS NXDOMAIN / SERVFAIL detectados pelo DNSTracker
-        print(f"  [INFO] DNS - {self.dns_tracker.paired} par(es) query/response observados")
-        print(f"  [INFO] DHCP - {self.dhcp_tracker.completed} sequencia(s) DORA completa(s)")
+            print(f"│  {cor_info}[INFO]{reset} Tráfego HTTPS presente — payloads cifrados        │")
+        
+        print("└──────────────────────────────────────────────────────────┘")

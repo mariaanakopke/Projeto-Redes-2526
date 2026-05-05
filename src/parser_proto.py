@@ -260,8 +260,8 @@ class PacketParser:
 
         flags_str = rec["flags"]
         summary = (
-            f"TCP {tcp.sport} > {tcp.dport} [{flags_str}] "
-            f"seq={tcp.seq} ack={tcp.ack} win={tcp.window}"
+            f"TCP {tcp.sport} -> {tcp.dport} [{flags_str}] "
+            f"Seq={tcp.seq} Ack={tcp.ack} Win={tcp.window} Len={rec['payload_size']}"
         )
 
         if tcp.dport == 80 or tcp.sport == 80:

@@ -34,6 +34,27 @@ def _cor(nome: str) -> str:
     return _COR.get(nome, "")
 
 
+_COL_NO = 6
+_COL_TIME = 14
+_COL_SRC = 20
+_COL_DST = 20
+_COL_PROTO = 8
+_COL_TTL = 5
+_COL_LEN = 8
+_COL_FRAG = 5
+_COL_OFF = 7
+_COL_FLAGS = 8
+
+
+def _fit(text: str, width: int) -> str:
+    value = str(text)
+    if len(value) <= width:
+        return value
+    if width <= 3:
+        return value[:width]
+    return value[: width - 3] + "..."
+
+
 class CaptureEngine:
     def __init__(self, iface=None, pcap_file=None, filters=None,
                  logger=None, analyzer=None, count=0):
@@ -107,11 +128,23 @@ class CaptureEngine:
 
     def _display(self, p: dict):
         proto   = p.get("proto", "???")
-        src     = p.get("src_ip") or p.get("src_mac") or "?"
-        dst     = p.get("dst_ip") or p.get("dst_mac") or "?"
+        src     = _fit(p.get("src_ip") or p.get("src_mac") or "?", _COL_SRC)
+        dst     = _fit(p.get("dst_ip") or p.get("dst_mac") or "?", _COL_DST)
         ttl     = p.get("ttl")
         ttl_str = str(ttl) if ttl is not None else "-"
-        size    = f"{p.get('size', 0)}B"
+        size    = _fit(f"{p.get('size', 0)}B", _COL_LEN)
+        frag_id = p.get("frag_id")
+        frag_offset = p.get("frag_offset")
+        frag_mf = p.get("frag_mf")
+        frag_df = p.get("frag_df")
+        frag_id_str = _fit(str(frag_id) if frag_id is not None else "-", _COL_FRAG)
+        frag_off_str = _fit(str(frag_offset) if frag_offset is not None else "-", _COL_OFF)
+        frag_flags = []
+        if frag_df:
+            frag_flags.append("DF")
+        if frag_mf:
+            frag_flags.append("MF")
+        frag_flags_str = _fit(" ".join(frag_flags) if frag_flags else "-", _COL_FLAGS)
         summary = p.get("summary", "")
 
         C_REQ = "\033[96m"
@@ -173,15 +206,19 @@ class CaptureEngine:
         rst      = _COR["reset"]
         dim      = _COR["cinza"]
         bold     = _COR["negrito"]
-        ttl_fmt  = f"{C_ERR}{ttl_str:<5}{RESET}" if ttl_low else f"{dim}{ttl_str:<5}{rst}"
+        ttl_fmt  = f"{C_ERR}{_fit(ttl_str, _COL_TTL):<{_COL_TTL}}{RESET}" if ttl_low else f"{dim}{_fit(ttl_str, _COL_TTL):<{_COL_TTL}}{rst}"
+        proto_fmt = f"{bold}{cor}{_fit(proto, _COL_PROTO):<{_COL_PROTO}}{rst}"
         
         print(
             f"{dim}{no:<6}{rst} "
-            f"{dim}{p['timestamp']:<14}{rst} "
+            f"{dim}{_fit(p['timestamp'], _COL_TIME):<{_COL_TIME}}{rst} "
             f"{src:<20} {dst:<20} "
-            f"{bold}{cor}{proto:<8}{rst} "
+            f"{proto_fmt} "
             f"{ttl_fmt} "
             f"{dim}{size:<8}{rst} "
+            f"{dim}{frag_id_str:<{_COL_FRAG}}{rst} "
+            f"{dim}{frag_off_str:<{_COL_OFF}}{rst} "
+            f"{dim}{frag_flags_str:<{_COL_FLAGS}}{rst} "
             f"{summary}"
         )
 
@@ -190,7 +227,7 @@ class CaptureEngine:
 
         extras = []
 
-        if p.get("tcp_seq") is not None:
+        if p.get("tcp_seq") is not None and p.get("proto") not in ("TCP", "HTTP"):
             opts     = p.get("tcp_options") or {}
             wscale   = opts.get("WScale")
             win_real = (p["tcp_window"] << wscale) if wscale else p["tcp_window"]

@@ -8,6 +8,28 @@ from logger import Logger
 from analyzer import ProtocolAnalyzer
 
 
+_COL_NO = 6
+_COL_TIME = 14
+_COL_SRC = 20
+_COL_DST = 20
+_COL_PROTO = 8
+_COL_TTL = 5
+_COL_LEN = 8
+_COL_FRAG = 5
+_COL_OFF = 7
+_COL_FLAGS = 8
+_HEADER_WIDTH = 115
+
+
+def _fit(text: str, width: int) -> str:
+    value = str(text)
+    if len(value) <= width:
+        return value
+    if width <= 3:
+        return value[:width]
+    return value[: width - 3] + "..."
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Packet Sniffer - UMinho RC 2025/2026",
@@ -75,11 +97,24 @@ def validar_iface(iface: str):
 
 
 def print_header():
+    title = "Packet Capture"
+    print(f"\n\033[96m{'=' * _HEADER_WIDTH}\033[0m")
+    print(f"\033[1m\033[97m{title:^{_HEADER_WIDTH}}\033[0m")
     print(
-        f"\033[1m{'No.':<6} {'Time':<14} {'Source':<20} {'Destination':<20} "
-        f"{'Protocol':<8} {'TTL':<5} {'Length':<8} {'Info'}\033[0m"
+        f"\033[1m"
+        f"{'No.':<{_COL_NO}} "
+        f"{'Time':<{_COL_TIME}} "
+        f"{'Source':<{_COL_SRC}} "
+        f"{'Destination':<{_COL_DST}} "
+        f"{'Protocol':<{_COL_PROTO}} "
+        f"{'TTL':<{_COL_TTL}} "
+        f"{'Length':<{_COL_LEN}} "
+        f"{'Id':<{_COL_FRAG}} "
+        f"{'Off':<{_COL_OFF}} "
+        f"{'F':<{_COL_FLAGS}} "
+        f"Info\033[0m"
     )
-    print("-" * 105)
+    print(f"\033[90m{'-' * _HEADER_WIDTH}\033[0m")
 
 
 def main():
