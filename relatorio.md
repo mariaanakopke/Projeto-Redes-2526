@@ -69,28 +69,45 @@ Esta separação garante que o `ProtocolAnalyzer` **nunca vê pacotes rejeitados
 
 ## 3. Estruturas de Armazenamento
 
-### Justificação do Uso de Dicionários (`dict`)
+As estruturas de armazenamento do sistema existem para dois fins distintos: primeiro, manter um registo normalizado de cada pacote capturado; segundo, guardar o estado necessário para correlacionar pacotes relacionados ao longo do tempo. Esta separação é importante porque o `FilterManager` apenas decide se um pacote passa ou não, enquanto o `ProtocolAnalyzer` é o componente que conserva informação entre pacotes.
 
-O `analyzer.py` utiliza **dicionários Python** como estrutura de dados principal para todas as tabelas de estado:
+### 3.1 Dicionário de Captura
 
-| Estrutura | Chave (tuplo) | Valor | Propósito |
+O `PacketParser` converte cada pacote Scapy num dicionário plano com chaves estáveis. Essa estrutura funciona como um DTO único para o resto do pipeline e evita que os módulos seguintes dependam diretamente de objetos complexos da Scapy.
+
+Este formato uniforme facilita três operações:
+
+1. filtragem por campos concretos como IP, MAC, protocolo ou porto;
+2. escrita consistente nos logs TXT, CSV e JSONL;
+3. entrega do mesmo registo ao analisador de protocolos.
+
+### 3.2 Estruturas de Estado no Analisador
+
+O `ProtocolAnalyzer` mantém várias tabelas em memória, todas implementadas com `dict` ou estruturas equivalentes, para assegurar acesso rápido e correlacionação eficiente:
+
+| Estrutura | Chave | Valor | Propósito |
 |---|---|---|---|
-| `tcp_flows` | `"ip:port <-> ip:port"` (string canónica) | Objeto `TCPState` | Rastrear handshake e dados por flow |
+| `tcp_flows` | string canónica `ip:port <-> ip:port` | objeto `TCPState` | Rastrear handshake, transferência de dados e fecho TCP |
+| `arp_pending` | `dst_ip` | timestamp | Emparelhar ARP Request/Reply |
 | `icmp_sessions` | `(src_ip, dst_ip, icmp_id)` | timestamp | Emparelhar Echo Request/Reply |
-| `arp_pending` | `dst_ip` (IP pedido) | timestamp | Emparelhar ARP Request/Reply |
-| `dns_tracker._pending` | `dns_id` (Transaction ID) | `{name, qtype, src, ts}` | Emparelhar Query/Response |
-| `dhcp_tracker._sessions` | `dhcp_xid` (BOOTP Transaction ID) | `{phase, client_mac, ...}` | Rastrear ciclo DORA |
-| `frag_tracker._pending` | `(src_ip, dst_ip, frag_id)` | `{fragments: [...], wall, ...}` | Agrupar fragmentos IP |
+| `frag_tracker._pending` | `(src_ip, dst_ip, frag_id)` | lista de fragmentos e metadados | Agrupar fragmentos IP |
+| `dns_tracker._pending` | `dns_id` | informação da query | Emparelhar DNS Query/Response |
+| `dhcp_tracker._sessions` | `dhcp_xid` | fase, MAC do cliente e IP oferecido | Rastrear o ciclo DORA |
+| `http_tracker._pending` | `(client_ip, server_ip, client_port)` | resumo do request | Emparelhar pedidos e respostas HTTP |
 
-**Justificação de desempenho**: Os dicionários em Python são implementados como hash tables, garantindo complexidade **O(1) amortizada** para operações de procura e inserção. Isto é crítico num sniffer em tempo real, onde cada pacote deve ser processado em microssegundos para não perder frames subsequentes. A alternativa (listas com busca linear O(n)) seria inviável com centenas de sessões simultâneas.
+### 3.3 Justificação de Projeto
 
-A utilização de **tuplos como chaves** (e.g., `(src_ip, dst_ip, icmp_id)`) é possível porque os tuplos são imutáveis e hashable em Python, oferecendo uma chave composta natural sem necessidade de concatenação de strings.
+Os dicionários em Python são adequados porque oferecem acesso médio em **O(1)** e permitem chaves compostas sem recorrer a estruturas mais pesadas. Isso é especialmente relevante num sniffer passivo, onde cada pacote deve ser processado rapidamente e sem introduzir latência desnecessária.
 
-### Garbage Collection
+A escolha de chaves compostas, como `(src_ip, dst_ip, icmp_id)` ou `(client_ip, server_ip, client_port)`, evita ambiguidades entre sessões simultâneas e reduz colisões no emparelhamento.
 
-O `FragmentTracker` implementa GC por timeout (30 segundos): fragmentos que não recebem o último pedaço dentro deste intervalo são descartados e reportados. Este mecanismo é invocado em cada nova chegada de fragmento (`_gc()` no início de `process()`).
+### 3.4 Gestão de Tempo de Vida
 
-[INSERIR PRINT: Excerto de `analyzer.py` — secção do `FragmentTracker._gc()` e da estrutura `_pending`]
+Nem todas as estruturas têm o mesmo comportamento de retenção. O `FragmentTracker` possui garbage collection por timeout de 30 segundos para remover fragmentos incompletos, enquanto os trackers de DNS e HTTP mantêm pendências até receberem a resposta correspondente.
+
+Esta diferença é intencional: a fragmentação tem um limite temporal claro, mas DNS e HTTP podem sofrer atrasos maiores sem que isso represente necessariamente erro.
+
+[INSERIR PRINT: Excerto de `analyzer.py` mostrando as tabelas `tcp_flows`, `icmp_sessions` e `frag_tracker._pending`]
 
 ---
 
