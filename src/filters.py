@@ -37,34 +37,6 @@ class FilterManager:
         self.ip           = ip.strip()           if ip           else None
         self.src_ip       = src_ip.strip()       if src_ip       else None
         self.dst_ip       = dst_ip.strip()       if dst_ip       else None
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
         self.mac          = mac.strip().lower()  if mac          else None
         self.proto        = proto.strip().upper() if proto        else None
         self.port         = int(port)            if port         else None
