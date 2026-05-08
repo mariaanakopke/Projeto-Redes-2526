@@ -1,47 +1,93 @@
-# Relatório Final — Packet Sniffer Passivo
+# Relatório Final - Packet Sniffer Passivo
 
 **Universidade do Minho | Licenciatura em Engenharia Informática**  
-**Redes de Computadores — Trabalho Prático 2 (2025/2026)**
+**Redes de Computadores - Trabalho Prático 2 (2025/2026)**
 
 ---
 
-## 1. Introdução e Objetivos
+## Índice
 
-O presente relatório documenta o desenvolvimento de um **Packet Sniffer Passivo** — uma ferramenta de captura e análise de tráfego de rede que opera exclusivamente em modo de leitura, sem qualquer forma de injeção de pacotes, modificação de fluxo ou interceção ativa (MITM).
+1. Introdução e objetivos
+2. Arquitetura geral do sistema
+    2.1 Visão por módulos  
+    2.2 Diagrama do pipeline  
+    2.3 Princípio passivo do sniffer
+3. Captura e pipeline de processamento
+    3.1 Modos de operação  
+    3.2 Ordem real do processamento
+4. Análise e parsing de protocolos
+    4.1 Camada de ligação (ARP)  
+    4.2 Camada de rede (IPv4, IPv6, ICMP, ICMPv6, fragmentação)  
+    4.3 Camada de transporte (TCP, UDP)  
+    4.4 Camada de aplicação (DNS, DHCP, HTTP)
+5. Sistema de filtragem
+    5.1 Filtros de inclusão/exclusão  
+    5.2 BPF + filtro Python  
+    5.3 Grupos de protocolos e anti-leakage
+6. Mapeamento e correlação de dados
+    6.1 TCP handshake/fecho  
+    6.2 ARP request/reply  
+    6.3 ICMP echo request/reply  
+    6.4 Fragmentação  
+    6.5 DNS, DHCP e HTTP tracking
+7. Apresentação e exportação de resultados
+    7.1 Modo consola  
+    7.2 Logs TXT/CSV/JSONL  
+    7.3 Formato dos campos e consistência dos registos
+8. Validação experimental
+    8.1 Testes em CORE  
+    8.2 Testes em interface real  
+    8.3 Exemplos concretos de capturas e resultados
+9. Limitações e trabalho futuro
+    9.1 Limitações  
+    9.2 Trabalho futuro  
+10. Conclusão
 
-O sistema foi implementado em **Python 3** com recurso à biblioteca **Scapy** (≥ 2.5.0) e cobre a extração completa de campos das camadas L2 a L7, com tracking stateful de fases de protocolo (handshakes TCP, ciclos de resolução ARP/ICMP, sequências DORA do DHCP e emparelhamento DNS).
+---
 
-### Objetivos Principais
+## 1. Introdução e objetivos
+
+Este relatório documenta o desenvolvimento de um **Packet Sniffer Passivo** para captura e análise de tráfego de rede em modo exclusivamente de leitura. O sistema foi implementado em **Python 3** com a biblioteca **Scapy** (>= 2.5.0), mantendo uma separação clara entre captura, parsing, filtragem, apresentação, registo e análise stateful.
+
+### Objetivos principais
 
 1. Capturar tráfego em tempo real numa interface de rede (Ethernet ou Wi-Fi) ou a partir de ficheiros `.pcap`.
-2. Extrair e apresentar campos relevantes de cada camada (MAC, IP, TCP/UDP, ICMP, DNS, DHCP, HTTP).
-3. Manter máquinas de estado para rastrear fases completas de protocolo (handshake TCP, ciclo DORA, pares Request/Reply).
-4. Oferecer filtragem avançada de pacotes (por IP, MAC, protocolo, porto) com dupla camada (BPF + Python).
-5. Exportar dados para ficheiros de log (TXT, CSV, JSONL) com resistência a crash via flush imediato.
-6. Gerar **diagramas de protocolo ASCII** e um **bloco de resumo estatístico** no final da captura.
-7. Ser compatível com execução em ambientes emulados via **CORE Network Emulator** e em interfaces reais.
+2. Extrair e apresentar campos relevantes no modelo de 5 camadas TCP/IP (Aplicação, Transporte, Rede, Ligação e Física), incluindo MAC, IP, TCP/UDP, ICMP, DNS, DHCP e HTTP.
+3. Manter correlação stateful de protocolos (handshake TCP, pares ARP/ICMP, sequência DHCP DORA e emparelhamento DNS/HTTP).
+4. Disponibilizar filtragem avançada por IP, MAC, protocolo e porto, com dupla camada (BPF + Python).
+5. Exportar resultados para TXT, CSV e JSONL com `flush` imediato por pacote.
+6. Validar o comportamento em ambiente emulado (CORE) e em interface real.
 
-### Restrições de Operação
+### Restrições de operação
 
-- Requer `root`/`sudo` para acesso a raw sockets.
-- Captura estritamente End-to-End (E2E): analisa o tráfego visível no end-host.
-- Não modifica, não reencaminha e não gera pacotes.
+- Requer privilégios `root`/`sudo` para acesso a raw sockets.
+- Funciona em modo passivo: não injeta, não altera e não reencaminha pacotes.
+- A visibilidade é End-to-End (E2E): observa apenas o tráfego visível na interface local.
 
 ---
 
-## 2. Arquitetura do Sistema e Diagramas
+## 2. Arquitetura geral do sistema
 
-O código está organizado em **seis módulos** com responsabilidades mutuamente exclusivas. Nenhum módulo toma decisões que pertencem a outro:
+### 2.1 Visão por módulos
+
+O projeto está organizado em seis módulos com responsabilidades independentes:
+
+- `main.py`: interface CLI, validação de argumentos e inicialização.
+- `capture.py`: motor de captura em tempo real e leitura de `.pcap`.
+- `parser_proto.py`: conversão de pacote Scapy para registo normalizado.
+- `filters.py`: decisão DROP/ACCEPT (filtros BPF e Python).
+- `logger.py`: persistência em TXT, CSV e JSONL.
+- `analyzer.py`: correlação stateful, estatísticas e diagramas ASCII.
 
 ```mermaid
 flowchart TB
-    main["main.py (CLI)\nargparse · validação · inicialização"]
-    capture["CaptureEngine\n(capture.py)\nsniff() / rdpcap() → pipeline por pacote"]
-    parser["PacketParser\n(parser_proto.py)\nScapy pkt → dict (L2-L7)"]
-    filter["FilterManager\n(filters.py)\nDROP / ACCEPT (BPF + Python)"]
-    display["Display\n(cores ANSI no terminal)"]
-    logger["Logger\n(logger.py)\nTXT / CSV / JSONL (flush/pkt)"]
-    analyzer["ProtocolAnalyzer\n(analyzer.py)\nMáquinas de estado, diagramas, resumo"]
+    main["main.py (CLI)\nargparse e inicialização"]
+    capture["CaptureEngine (capture.py)\nsniff() / rdpcap()"]
+    parser["PacketParser (parser_proto.py)\nScapy -> dict"]
+    filter["FilterManager (filters.py)\nDROP / ACCEPT"]
+    display["Display\nsaída colorida no terminal"]
+    logger["Logger (logger.py)\nTXT / CSV / JSONL"]
+    analyzer["ProtocolAnalyzer (analyzer.py)\ntracking stateful e resumo"]
 
     main --> capture
     capture --> parser
@@ -51,353 +97,262 @@ flowchart TB
     logger --> analyzer
 ```
 
-### Separação Crítica: Filtragem vs Análise
+### 2.2 Diagrama do pipeline
 
-| Propriedade | FilterManager | ProtocolAnalyzer |
-|---|---|---|
-| **Função** | Decide DROP/ACCEPT | Rastreia estado de protocolo |
-| **Vê pacotes raw?** | Não (opera sobre o dict) | Sim (recebe dict + pkt Scapy) |
-| **Altera estado?** | Nunca | Sim (máquinas de estado) |
-| **Pode ver pacotes descartados?** | N/A (ele é quem decide) | **Nunca** — só vê aceites |
-| **Dependência entre módulos** | Nenhuma com Analyzer | Nenhuma com Filter |
+A ordem do pipeline de processamento é fixa e consistente em todo o projeto:
 
-Esta separação garante que o `ProtocolAnalyzer` **nunca vê pacotes rejeitados** pelo filtro, e que o `FilterManager` **nunca acede a estado de sessão** — as duas responsabilidades não se misturam em nenhum ponto do código.
+`parse -> filter -> display -> log -> analyze`
 
-[INSERIR PRINT: Excerto de `capture.py` mostrando o pipeline `_process()` — onde se vê a ordem parse → filter → display → log → analyze]
+- O parser cria o registo comum.
+- O filtro decide se o pacote é aceite.
+- A apresentação e o logging atuam apenas sobre pacotes aceites.
+- O analisador recebe apenas pacotes aceites, garantindo ausência de leakage de estado.
 
----
+[INSERIR PRINT: excerto de `capture.py` com `_process()` e a ordem completa do pipeline]
 
-## 3. Estruturas de Armazenamento
+### 2.3 Princípio passivo do sniffer
 
-As estruturas de armazenamento do sistema existem para dois fins distintos: primeiro, manter um registo normalizado de cada pacote capturado; segundo, guardar o estado necessário para correlacionar pacotes relacionados ao longo do tempo. Esta separação é importante porque o `FilterManager` apenas decide se um pacote passa ou não, enquanto o `ProtocolAnalyzer` é o componente que conserva informação entre pacotes.
+O sniffer opera com cópia de pacotes recebidos pela interface local, sem alteração do fluxo de rede:
 
-### 3.1 Dicionário de Captura
+- acesso em leitura a raw sockets;
+- ausência de técnicas ativas (MITM, spoofing, injeção);
+- suporte a captura live e análise offline de `.pcap`.
 
-O `PacketParser` converte cada pacote Scapy num dicionário plano com chaves estáveis. Essa estrutura funciona como um DTO único para o resto do pipeline e evita que os módulos seguintes dependam diretamente de objetos complexos da Scapy.
-
-Este formato uniforme facilita três operações:
-
-1. filtragem por campos concretos como IP, MAC, protocolo ou porto;
-2. escrita consistente nos logs TXT, CSV e JSONL;
-3. entrega do mesmo registo ao analisador de protocolos.
-
-### 3.2 Estruturas de Estado no Analisador
-
-O `ProtocolAnalyzer` mantém várias tabelas em memória, todas implementadas com `dict` ou estruturas equivalentes, para assegurar acesso rápido e correlacionação eficiente:
-
-| Estrutura | Chave | Valor | Propósito |
-|---|---|---|---|
-| `tcp_flows` | string canónica `ip:port <-> ip:port` | objeto `TCPState` | Rastrear handshake, transferência de dados e fecho TCP |
-| `arp_pending` | `dst_ip` | timestamp | Emparelhar ARP Request/Reply |
-| `icmp_sessions` | `(src_ip, dst_ip, icmp_id)` | timestamp | Emparelhar Echo Request/Reply |
-| `frag_tracker._pending` | `(src_ip, dst_ip, frag_id)` | lista de fragmentos e metadados | Agrupar fragmentos IP |
-| `dns_tracker._pending` | `dns_id` | informação da query | Emparelhar DNS Query/Response |
-| `dhcp_tracker._sessions` | `dhcp_xid` | fase, MAC do cliente e IP oferecido | Rastrear o ciclo DORA |
-| `http_tracker._pending` | `(client_ip, server_ip, client_port)` | resumo do request | Emparelhar pedidos e respostas HTTP |
-
-### 3.3 Justificação de Projeto
-
-Os dicionários em Python são adequados porque oferecem acesso médio em **O(1)** e permitem chaves compostas sem recorrer a estruturas mais pesadas. Isso é especialmente relevante num sniffer passivo, onde cada pacote deve ser processado rapidamente e sem introduzir latência desnecessária.
-
-A escolha de chaves compostas, como `(src_ip, dst_ip, icmp_id)` ou `(client_ip, server_ip, client_port)`, evita ambiguidades entre sessões simultâneas e reduz colisões no emparelhamento.
-
-### 3.4 Gestão de Tempo de Vida
-
-Nem todas as estruturas têm o mesmo comportamento de retenção. O `FragmentTracker` possui garbage collection por timeout de 30 segundos para remover fragmentos incompletos, enquanto os trackers de DNS e HTTP mantêm pendências até receberem a resposta correspondente.
-
-Esta diferença é intencional: a fragmentação tem um limite temporal claro, mas DNS e HTTP podem sofrer atrasos maiores sem que isso represente necessariamente erro.
-
-[INSERIR PRINT: Excerto de `analyzer.py` mostrando as tabelas `tcp_flows`, `icmp_sessions` e `frag_tracker._pending`]
+Esta abordagem garante conformidade com o objetivo de observação passiva.
 
 ---
 
-## 4. Filtragem vs Validação e Edge Cases
+## 3. Captura e pipeline de processamento
 
-### Dupla Camada de Filtragem
+### 3.1 Modos de operação
 
-O sistema implementa **dois mecanismos de filtragem em série**, cada um com vantagens complementares:
+O sistema suporta três modos principais:
 
-```mermaid
-flowchart TB
-    raw["Pacote raw\n(kernel)"]
-    bpf["BPF (kernel-space)\nGerado por to_bpf()"]
-    pyfilter["Filtro Python\n(FilterManager.match())\nAnti-leakage por grupos"]
-    analyzer_accepted["ProtocolAnalyzer\n(só pacotes ACEITES)"]
+1. **Captura em interface real**: `-i <interface>` para captura contínua.
+2. **Leitura de ficheiro `.pcap`**: `--pcap <ficheiro>` para análise offline.
+3. **Listagem de interfaces**: opção CLI para enumerar interfaces disponíveis.
 
-    raw --> bpf --> pyfilter --> analyzer_accepted
+Exemplos:
+
+```bash
+sudo python3 main.py -i eth0 --analyze
+sudo python3 main.py -i wlan0 --analyze
+sudo python3 main.py --pcap captura.pcap --analyze
 ```
 
-### Anti-Leakage por Grupos de Protocolo
+Em caso de falta de permissão, a captura live em raw sockets é bloqueada pelo sistema operativo.
 
-O filtro conhece relações de continência entre protocolos:
+### 3.2 Ordem real do processamento
+
+Para cada pacote recebido, o pipeline segue os passos abaixo:
+
+1. Inicialização de registo base (`_empty_record()`).
+2. Parsing de cabeçalhos e campos (`parse()`).
+3. Aplicação de filtros (`FilterManager.match()`).
+4. Apresentação em consola (`_display()`).
+5. Escrita de registo (`Logger.write()`).
+6. Correlação stateful (`ProtocolAnalyzer.analyze()`).
+
+Este encadeamento garante separação entre decisões de filtragem e lógica de análise de estado.
+
+---
+
+## 4. Análise e parsing de protocolos
+
+### 4.1 Camada de ligação
+
+#### ARP
+
+O parser extrai opcode, MAC e IP de origem/destino, classificando mensagens como Request/Reply. O resumo inclui o tipo de operação para leitura imediata na consola.
+
+No contexto das 5 camadas, ARP é tratado na fronteira Ligação/Rede, pois suporta a resolução de endereços entre estas camadas.
+
+### 4.2 Camada de rede
+
+#### IPv4
+
+Campos extraídos: endereços, `ttl`, `id`, flags de fragmentação (`MF`/`DF`), offset e comprimento.
+
+#### IPv6
+
+Campos extraídos: origem/destino, `hop_limit` e identificação de fragmentação IPv6 quando existe um cabeçalho `IPv6ExtHdrFragment`.
+
+#### ICMP
+
+O parser reconhece Echo Request, Echo Reply, Destination Unreachable e Time Exceeded, incluindo mensagens de erro associadas a TTL expirado e à reassemblagem de fragmentos. Estes eventos são resumidos em campo próprio para apresentação no terminal.
+
+#### ICMPv6
+
+Neste estado do projeto, o suporte ICMPv6 está centrado em Echo Request e Echo Reply, bem como nas mensagens de erro `Dest Unreach` e `Time Exceeded`. As mensagens de Neighbor Discovery e Router Advertisement não são tratadas explicitamente pelo parser atual, pelo que ficam como trabalho futuro caso se pretenda cobrir o conjunto completo de ICMPv6.
+
+#### Fragmentação
+
+A deteção de fragmentos IPv4 é feita no parsing, através das flags `MF`/`DF` e do offset, e essa informação segue para o `FragmentTracker`, onde os fragmentos são correlacionados por identificação e origem/destino.
+
+### 4.3 Camada de transporte
+
+#### TCP
+
+Extração de portos, flags (`SYN`, `ACK`, `FIN`, `RST`), números de sequência/acknowledgment e tamanho efetivo de payload.
+
+#### UDP
+
+Extração de portos e comprimento, com encaminhamento para classificação de protocolos de aplicação sobre UDP (DNS e DHCP).
+
+### 4.4 Camada de aplicação
+
+#### DNS
+
+Deteção de Query/Response por `qr`, com extração de `dns_id`, nome, tipo de consulta e estado de resposta.
+
+#### DHCP
+
+Deteção por portos `67/68` e campos BOOTP/DHCP. O parser recolhe `xid`, tipo de mensagem e metadados essenciais para o ciclo DORA:
+
+- Discover
+- Offer
+- Request
+- ACK
+
+#### HTTP
+
+Deteção de requests e responses em TCP porto 80, com identificação de método, URI e códigos de resposta quando disponíveis.
+
+Nota: a camada Física é observada de forma indireta (via interface e driver) e não é dissecada ao nível de bits neste projeto; por isso, a análise detalhada incide nas camadas Ligação, Rede, Transporte e Aplicação.
+
+---
+
+## 5. Sistema de filtragem
+
+### 5.1 Filtros de inclusão/exclusão
+
+Os filtros suportam critérios por:
+
+- protocolo (`--proto`, `--exclude-proto`);
+- IP de origem/destino;
+- MAC de origem/destino;
+- porto de origem/destino;
+- limites de captura (número de pacotes e duração).
+
+A prioridade de exclusão é absoluta quando há contradições explícitas (ex.: incluir e excluir o mesmo protocolo).
+
+### 5.2 BPF + filtro Python
+
+A filtragem é implementada em duas camadas:
+
+1. **BPF (kernel-space)**: reduz volume antes da entrega ao processo Python.
+2. **Filtro Python**: valida regras finais sobre o registo parseado.
+
+Se a interface não suportar o BPF gerado, existe fallback para captura sem BPF, mantendo a validação Python.
+
+### 5.3 Grupos de protocolos e anti-leakage
+
+Para evitar classificações incorretas e leakage:
+
+- protocolos de aplicação são identificados antes dos genéricos quando necessário (ex.: DNS antes de UDP puro);
+- exclusões propagam-se por grupos lógicos;
+- a contagem final obedece ao invariante `accepted + dropped == total`.
+
+Exemplo de grupos:
 
 ```python
 _PROTO_GROUP = {
-    "TCP": {"TCP", "HTTP"},     # Excluir TCP exclui HTTP
-    "UDP": {"UDP", "DNS", "DHCP"},  # Excluir UDP exclui DNS e DHCP
+    "TCP": {"TCP", "HTTP"},
+    "UDP": {"UDP", "DNS", "DHCP"},
 }
 ```
 
-Isto garante que `--exclude-proto TCP` descarta **também** pacotes HTTP (que são TCP no porto 80). Sem esta expansão, existiria *leakage*: pacotes TCP no porto 80 passariam pela exclusão por terem `proto=HTTP`.
+---
 
-### Cenários de Edge Case
+## 6. Mapeamento e correlação de dados
 
-| Cenário | Comportamento |
-|---|---|
-| `--proto TCP --exclude-proto TCP` | Contradição detectada na inicialização. Aviso emitido. Nenhum pacote passa (exclusão tem prioridade absoluta). |
-| Interface sem tráfego correspondente ao filtro | 0 pacotes aceites, 0 ou N dropped, sem erro. |
-| BPF não suportado na interface | Fallback automático: captura sem BPF + filtro Python mantém-se activo. Aviso impresso. |
-| Filtro por IP inexistente | Todos os pacotes são descartados pelo filtro Python. `accepted = 0`. |
+### 6.1 TCP handshake/fecho
 
-### Invariante de Contagem
+A estrutura `TCPState` implementa máquina de estados direcional:
 
-No final de cada captura, o sistema verifica:
+- `SYN -> SYN_SENT`
+- `SYN+ACK -> SYN_RECEIVED`
+- `ACK -> ESTABLISHED`
+- `FIN/RST -> encerramento`
 
-```python
-assert accepted + dropped == total, "INVARIANTE VIOLADO: leakage de contagem!"
-```
+Durante `ESTABLISHED`, a progressão de ACKs permite estimar bytes transferidos por direção.
 
-Se esta condição falhar, significa que existem pacotes não contabilizados — um bug de leakage no pipeline.
+### 6.2 ARP request/reply
 
-[INSERIR PRINT: Terminal mostrando output com filtros activos e estatísticas `[stats] Total: X | Aceites: Y | Filtrados: Z (W%)`]
+Emparelhamento por IP solicitado:
+
+- Request regista pendência;
+- Reply fecha o par e atualiza tabela ARP observada.
+
+### 6.3 ICMP echo request/reply
+
+Emparelhamento por chave composta `(src_ip, dst_ip, icmp_id)` para evitar colisões entre sessões simultâneas.
+
+### 6.4 Fragmentação
+
+`FragmentTracker` agrega fragmentos por chave `(src_ip, dst_ip, frag_id)` e aplica timeout de limpeza para fragmentos incompletos.
+
+### 6.5 DNS, DHCP e HTTP tracking
+
+- **DNS**: emparelhamento Query/Response por `dns_id`.
+- **DHCP**: sequência DORA por `dhcp_xid`.
+- **HTTP**: emparelhamento request/response por tuplo de conexão `(client_ip, server_ip, client_port)`.
+
+Estruturas principais mantidas em memória:
+
+| Estrutura | Chave | Propósito |
+|---|---|---|
+| `tcp_flows` | `ip:porto <-> ip:porto` | Estado TCP completo |
+| `arp_pending` | `dst_ip` | Request/Reply ARP |
+| `icmp_sessions` | `(src_ip, dst_ip, icmp_id)` | Echo Request/Reply |
+| `frag_tracker._pending` | `(src_ip, dst_ip, frag_id)` | Agrupamento de fragmentos |
+| `dns_tracker._pending` | `dns_id` | Query/Response DNS |
+| `dhcp_tracker._sessions` | `dhcp_xid` | Sequência DORA |
+| `http_tracker._pending` | `(client_ip, server_ip, client_port)` | Request/Response HTTP |
 
 ---
 
-## 5. Validação e Análise de Protocolos
+## 7. Apresentação e exportação de resultados
 
-### 5.1 TCP — Máquina de Estados Completa
+### 7.1 Modo consola
 
-A classe `TCPState` implementa uma máquina de estados **direcional** — distingue pacotes do cliente (iniciador do SYN) e do servidor:
+A saída live usa códigos ANSI para destacar protocolo e contexto:
 
-```
-           Cliente                          Servidor
-              │                                │
-              │─── SYN (seq=x) ───────────────→│   CLOSED → SYN_SENT
-              │                                │
-              │←── SYN+ACK (seq=y, ack=x+1) ──│   SYN_SENT → SYN_RECEIVED
-              │                                │
-              │─── ACK (ack=y+1) ─────────────→│   SYN_RECEIVED → ESTABLISHED ✓
-              │                                │
-              │      ═══ TRANSFERÊNCIA DE DADOS ═══
-              │    (tracking bytes via progressão de ACK)
-              │                                │
-              │─── FIN ───────────────────────→│   ESTABLISHED → FIN_WAIT
-              │                                │
-              │←── FIN+ACK ────────────────────│   FIN_WAIT → CLOSED (FIN) ✓
-              │                                │
-              │═══ OU A QUALQUER MOMENTO: ═════│
-              │─── RST ───────────────────────→│   Qualquer → CLOSED (RST)
-```
+- marcadores `[REQUEST]`, `[REPLY]`, `[ERRO]`, `[FIN]`, `[RST]`;
+- alertas de TTL baixo e `ICMP Time Exceeded`;
+- visualização resumida para acompanhamento em tempo real.
 
-**Tracking de dados**: Durante a fase `ESTABLISHED`, os bytes transferidos são estimados pela progressão dos números de ACK em cada direção, com guarda contra wrap-around do espaço de sequência (delta máximo de 1 GB).
+### 7.2 Logs TXT/CSV/JSONL
 
-**Verificação direcional**: Um `SYN+ACK` só é aceite se vier do servidor; o `ACK` de conclusão do handshake só é aceite se vier do cliente. Isto previne falsos positivos em cenários de retransmissão.
+O módulo de logging suporta três formatos:
 
-### 5.2 ARP — Emparelhamento Request / Reply
+| Formato | Flag | Ficheiro | Uso |
+|---|---|---|---|
+| TXT | `--log txt` | `captura.txt` | leitura humana |
+| CSV | `--log csv` | `captura.csv` | análise tabular |
+| JSONL | `--log json` | `captura.jsonl` | processamento automatizado |
 
-```python
-# Chave: dst_ip (IP pedido no Request)
-if "Request" in summary:
-    self.arp_pending[p["dst_ip"]] = timestamp
+Todos os formatos usam `flush()` por pacote para reduzir perda de dados em interrupções.
 
-elif "Reply" in summary:
-    if src_ip in self.arp_pending:
-        # Troca completa! Registar na tabela ARP
-        self.arp_table[src_ip] = src_mac
-        del self.arp_pending[src_ip]
-```
+A origem da captura pode ser live ou `.pcap`; o formato de exportação mantém-se uniforme nos dois casos.
 
-O ciclo fecha-se quando um Reply vem de um IP que estava na tabela de pendentes.
+### 7.3 Formato dos campos e consistência dos registos
 
-### 5.3 ICMP — Emparelhamento por Sessão e Análise de TTL
+O `PacketParser` produz um DTO plano com chaves estáveis para todo o pipeline. Quando um campo não existe no protocolo observado, o valor é `None`, evitando falhas por chave ausente.
 
-O protocolo ICMP é rastreado em duas dimensões complementares:
+Vantagens:
 
-#### 5.3.1 Echo Request / Echo Reply (Ping)
-
-```python
-# Chave: (src_ip, dst_ip, icmp_id)
-if icmp_type == 8:  # Echo Request
-    key = (src_ip, dst_ip, icmp_id)
-    self.icmp_sessions[key] = timestamp
-
-elif icmp_type == 0:  # Echo Reply
-    key = (dst_ip, src_ip, icmp_id)  # chave invertida!
-    if key in self.icmp_sessions:
-        # Par completo
-        del self.icmp_sessions[key]
-```
-
-O campo `icmp_id` distingue sessões de ping simultâneas do mesmo host, eliminando colisões que ocorreriam com chaves baseadas apenas em IPs.
-
-#### 5.3.2 Time Exceeded — Análise de TTL (Time To Live)
-
-O sniffer implementa detecção e monitoramento automático de situações de **TTL expirado**:
-
-```python
-# Análise de TTL em parser_proto.py
-elif icmp.type == 11:  # ICMP Time Exceeded (TTL expirado)
-    rec["ttl_exceeded"] = True  # marcador de situação crítica
-    detail = ""
-    if icmp.haslayer(IP):
-        inner = icmp[IP]
-        detail = f" (orig TTL={inner.ttl} {inner.src} > {inner.dst})"
-    rec["summary"] = f"ICMP Time Exceeded: TTL exceeded in transit{detail}"
-```
-
-Quando um pacote viaja através de múltiplos routers, cada router decrementa o TTL. Quando o TTL chega a zero antes do pacote atingir o destino, o router que recebe um TTL=0 gera uma mensagem ICMP Type 11 (Time Exceeded) de volta ao remetente.
-
-**Visualização em tempo real:**
-
-No terminal, os pacotes com TTL expirado são exibidos com:
-- Mensagem **`[TIME TO LIVE EXCEEDED]`** em **vermelho** no campo de resumo
-- A mensagem inclui o TTL original do pacote que expirou
-- Campo TTL permanece em cinza (é o TTL do pacote ICMP de resposta, não do original)
-
-Além disso, pacotes normais com TTL muito baixo (0 ou 1) são alertados com:
-- Campo TTL em **vermelho** e precedido por **`⚠ TTL MUITO BAIXO!`** no final da linha
-
-```
-  1   12:34:56.789 192.168.1.100      8.8.8.8             ICMP     11       84B [TIME TO LIVE EXCEEDED] ICMP Time Exceeded: TTL exceeded in transit
-  2   12:34:56.790 10.0.0.5           10.0.0.1            IPv4     1        512B Summary ⚠ TTL MUITO BAIXO!
-```
-
-**Casos de Uso Práticos:**
-
-| Cenário | TTL Observado | Causa |
-|---|---|---|
-| Host local (sem roteadores) | 64 ou 255 (OS-dependente) | Remetente define TTL alto |
-| Atravessamento de N routers | 64 - N | Cada router decrementa |
-| Traceroute bem-sucedido | Variável (1, 2, 3...) | Intencionalmente incrementado para descoberta |
-| Pacote perdido (ICMP Time Exceeded) | Mensagem Type 11 | TTL atingiu 0 no caminho |
-
-O rastreamento de TTL é essencial para:
-- **Diagnosticar loops de encaminhamento**: Se um traceroute nunca atinge o destino (apenas Time Exceeded), há uma rota malformada.
-- **Detectar fragmentação anómala**: Fragmentos com TTL crescente indicam retransmissão ou reencaminhamento inesperado.
-- **Verificar MPLS/túneis**: Pacotes dentro de túneis podem ter TTLs em camadas múltiplas.
-
-### 5.4 DNS — Emparelhamento por Transaction ID
-
-```python
-# Chave: dns_id (Transaction ID de 16 bits)
-if dns_qr == 0:  # Query
-    self._pending[dns_id] = {"name": name, "qtype": qtype, ...}
-
-elif dns_qr == 1:  # Response
-    if dns_id in self._pending:
-        req = self._pending.pop(dns_id)  # par completo
-```
-
-### 5.5 DHCP — Ciclo DORA via `dhcp_xid`
-
-```python
-# Chave: dhcp_xid (BOOTP Transaction ID)
-# Sequência: Discover → Offer → Request → ACK
-if msg_type == "ACK":
-    ip = sess["offered_ip"]
-    del self._sessions[xid]
-    self.completed += 1
-    # Ciclo DORA completo!
-```
-
-### 5.6 HTTP — Emparelhamento por Tuplo de Conexão
-
-```python
-# Chave: (client_ip, server_ip, client_port)
-# Request: dst_port == 80 e método HTTP presente
-# Response: src_port == 80 e porto destino == porto efémero do request
-```
-
-### 5.7 Visualização em Tempo Real — Formatação com Cores ANSI e Alertas de TTL
-
-A camada de apresentação (`capture.py` — função `_display()`) implementa uma visualização colorida e contextualizada de cada pacote, destacando protocolos, erros e anomalias através de sequências ANSI:
-
-#### 5.7.1 Esquema de Cores por Protocolo
-
-| Protocolo | Cor | Código ANSI |
-|---|---|---|
-| TCP | Verde | `\033[92m` |
-| UDP | Azul | `\033[94m` |
-| ARP | Amarelo | `\033[93m` |
-| ICMP | Ciano | `\033[96m` |
-| DNS | Vermelho | `\033[91m` |
-| HTTP | Magenta | `\033[95m` |
-| DHCP | Branco | `\033[97m` |
-| IPv4/IPv6 | Cinza | `\033[90m` |
-
-#### 5.7.2 Marcadores Contextuais
-
-Além da cor do protocolo, o resumo (`summary`) do pacote é enriquecido com marcadores que indicam o papel do pacote na comunicação:
-
-| Marcador | Cor | Significado |
-|---|---|---|
-| `[REQUEST]` | Ciano | Pedido do cliente (DNS Query, HTTP GET, ICMP Echo Request, etc.) |
-| `[REPLY]` | Verde | Resposta do servidor (DNS Response, HTTP Response, etc.) |
-| `[TCP REQUEST - SYN]` | Ciano | Iniciação de handshake TCP |
-| `[TCP REPLY - SYN+ACK]` | Verde | Servidor responde ao handshake TCP |
-| `[ERRO]` | Vermelho | Condições de erro (Dest Unreachable, Time Exceeded, etc.) |
-| `[FIN - Terminação]` | Vermelho | Encerramento de conexão TCP |
-| `[RST - Reset]` | Vermelho | Reset forçado da conexão TCP |
-
-#### 5.7.3 Alertas de TTL
-
-**Situação 1: Pacote com TTL muito baixo (0 ou 1)**
-
-Quando um pacote IPv4 ou IPv6 chega com TTL ≤ 1, o campo de TTL é exibido em **vermelho** com um alerta adicional na linha:
-
-```
-  42   12:35:12.456 192.168.1.100      8.8.8.8             IPv4     1        512B ⚠ TTL MUITO BAIXO!
-                                                                            ↑
-                                                                    Em vermelho
-```
-
-Isto indica que o pacote tem apenas 1 salto remanescente — se atravessar outro router, será descartado e gerará um ICMP Time Exceeded.
-
-**Situação 2: Pacote ICMP Time Exceeded (TTL expirado no caminho)**
-
-Quando a captura recebe um ICMP Type 11 (Time Exceeded), o parser marca `ttl_exceeded = True` e a exibição em tempo real mostra:
-
-```
-  43   12:35:12.457 192.168.1.1        192.168.1.100       ICMP     64       56B [TIME TO LIVE EXCEEDED] ICMP Time Exceeded: TTL exceeded in transit (orig TTL=1 10.0.0.5 > 8.8.8.8)
-                                                                            ↑
-                                                                    Em vermelho
-```
-
-O resumo completo inclui:
-- O TTL original do pacote que expirou
-- Os endereços IP do pacote original (extraído do cabeçalho ICMP encapsulado)
-
-#### 5.7.4 Exemplo de Saída com Múltiplos Alertas
-
-```
-   1   12:30:00.100 192.168.1.100      192.168.1.1         ICMP     64       32B [REQUEST] Echo Request id=1234 seq=1
-   2   12:30:00.150 192.168.1.1        192.168.1.100       ICMP     64       32B [REPLY] Echo Reply id=1234 seq=1
-   3   12:30:01.100 10.0.0.5           8.8.8.8             IPv4     2        512B ⚠ TTL MUITO BAIXO!
-       |_ FRAG id=54321 off=0B last DF
-   4   12:30:01.150 192.168.0.1        10.0.0.5            ICMP     64       56B [ERRO] [TIME TO LIVE EXCEEDED] ICMP Time Exceeded: TTL exceeded in transit (orig TTL=1 10.0.0.5 > 8.8.8.8)
-```
-
-**Interpretação da saída acima:**
-
-- Linhas 1-2: Ping bem-sucedido (Request/Reply emparelhado)
-- Linha 3: Pacote saindo da interface local com TTL=2 (alerta porque está muito perto de expirar)
-- Linha 4: Um dos routers pelo caminho gerou este ICMP Time Exceeded porque o TTL chegou a 0 antes de atingir 8.8.8.8
-
-Esta combinação de alertas permite ao utilizador **diagnosticar problemas de encaminhamento em tempo real** sem necessidade de ferramentas externas como `traceroute`.
-
-[INSERIR PRINT: Código da classe `TCPState.transition()` mostrando as transições SYN→SYN_SENT→SYN_RECEIVED→ESTABLISHED]
-
-[INSERIR PRINT: Terminal a mostrar output live com tags `[REQUEST]`/`[REPLY]` coloridas — emparelhamento ICMP e ARP visível, incluindo alertas de TTL]
+- consistência entre consola, filtros, logs e analisador;
+- menor acoplamento com objetos Scapy;
+- robustez contra `KeyError` em fluxos heterogéneos.
 
 ---
 
-## PARTE A — Instanciação e Captura na Rede Emulada (CORE)
+## 8. Validação experimental
 
-## 6. Topologia CORE e Justificação do Nó de Execução
+### 8.1 Testes em CORE
 
-### Topologia Utilizada
-
-A topologia criada no CORE permite demonstrar todos os protocolos alvo: ARP (resolução local), ICMP (ping entre nós), TCP (transferências HTTP via netcat ou serviços locais), UDP (DNS e DHCP), e fragmentação IP (com pacotes superiores ao MTU).
+Topologia usada para validação controlada:
 
 ```mermaid
 graph LR
@@ -405,217 +360,98 @@ graph LR
     R1["R1\n(router)"]
     R2["R2\n(router)"]
     R3["R3\n(router)"]
-    n6["n6\n(host)\n(sniffer)"]
+    n6["n6\n(host/sniffer)"]
 
     n1 --- R1 --- R2 --- R3 --- n6
 ```
 
-### Porquê Executar no Host (nó n6) e Não num Router
+Testes executados:
 
-O sniffer é executado num **end-host** (máquina final na topologia) e não num router de trânsito. Esta decisão é fundamental:
-
-1. **Objetivo E2E**: O propósito é inspecionar o tráfego que **chega ou sai** de uma máquina final — exatamente o que uma aplicação real (browser, cliente DNS, etc.) vê. Um router de trânsito vê tráfego de terceiros que não lhe é destinado.
-
-2. **Sem MITM**: Capturar num router implicaria inspecionar tráfego de trânsito entre outros hosts, o que constitui interceção ativa. O nosso sniffer é **puramente passivo** — só lê cópias dos frames que passam na interface do host.
-
-3. **Rastreamento de Estado Coerente**: As máquinas de estado (TCP handshake, DHCP DORA) só fazem sentido do ponto de vista de um participante na comunicação. Num router, veríamos apenas pacotes em trânsito sem contexto completo da sessão.
-
-4. **Interface Promíscua Desnecessária**: No end-host, todos os pacotes capturados são legitimamente destinados a ou originados por essa máquina (ou broadcasts). Não é necessário modo promíscuo.
-
-### Testes Realizados no CORE
-
-| Teste | Comando no CORE | Protocolo(s) Observados |
+| Teste | Comando | Protocolos observados |
 |---|---|---|
-| Ping entre n1 e n6 | `n1: ping 10.0.3.20` | ARP (resolução gateway) + ICMP Echo Request/Reply |
-| Transferência TCP | `n6: nc -l 80` / `n1: echo "test" \| nc 10.0.3.20 80` | TCP (handshake SYN→SYN+ACK→ACK) + dados + FIN |
-| Resolução DNS | `n6: nslookup example.com 10.0.0.1` | DNS Query/Response (emparelhamento por Transaction ID) |
-| DHCP (se configurado) | `n6: dhclient eth0` | DHCP DORA completo (Discover→Offer→Request→ACK) |
-| Fragmentação IP | `n1: ping -s 4000 10.0.3.20` | IPv4 com MF=1, reassembly de fragmentos |
+| Ping | `ping 10.0.3.20` | ARP + ICMP |
+| TCP | `nc -l 80` / `echo test | nc ...` | handshake + dados + fecho |
+| DNS | `nslookup example.com ...` | Query/Response |
+| DHCP | `dhclient eth0` | DORA completo |
+| Fragmentação | `ping -s 4000 ...` | fragmentos IPv4 |
 
-Todos os protocolos acima foram validados no ambiente controlado do CORE **antes** da transposição para a interface real.
+### 8.2 Testes em interface real
 
-[INSERIR PRINT: Topologia CORE com o nó n6 destacado e o sniffer a correr no terminal desse nó]
-
-[INSERIR PRINT: Terminal no CORE mostrando captura de ping (ICMP Request/Reply) e handshake TCP com diagramas]
-
----
-
-## PARTE B — Transposição para a Interface Real do PC
-
-## 7. Captura na Interface Real (Wi-Fi / Ethernet)
-
-### Transposição do CORE para o PC
-
-Nesta fase, o sniffer é executado na **interface real do computador** (Wi-Fi ou Ethernet). O mesmo código que funcionou no CORE é utilizado sem modificações — apenas muda o argumento `-i`:
+Execução em interfaces reais (Wi-Fi/Ethernet):
 
 ```bash
-# No CORE:
+sudo python3 main.py -i wlan0 --analyze
+sudo python3 main.py -i enp3s0 --analyze
+```
+
+Observações principais:
+
+- maior volume de ruído de fundo (mDNS, SSDP, broadcasts);
+- predomínio de HTTPS (payload cifrado);
+- presença frequente de IPv6/ICMPv6 em redes modernas;
+- necessidade de filtragem para isolamento de cenários.
+
+### 8.3 Exemplos concretos de capturas e resultados
+
+Exemplos de execução:
+
+```bash
+# Captura live
 sudo python3 main.py -i eth0 --analyze
 
-# Na interface real:
-sudo python3 main.py -i wlan0 --analyze        # Wi-Fi
-sudo python3 main.py -i enp3s0 --analyze       # Ethernet
+# Análise offline + exportação CSV
+sudo python3 main.py --pcap captura.pcap --analyze --log csv --output sessao
+
+# Apenas DNS
+sudo python3 main.py -i eth0 --proto DNS --analyze -n 50
+
+# Excluir TCP/HTTP e exportar JSONL
+sudo python3 main.py -i eth0 --exclude-proto TCP --log json --output sem_tcp
 ```
 
-### Protocolos Observados na Interface Real
-
-Na interface real, além dos protocolos já validados no CORE, observam-se protocolos adicionais que não são facilmente reproduzíveis no ambiente emulado:
-
-| Protocolo | Observação na Interface Real |
-|---|---|
-| **ARP** | Resolução do gateway da rede doméstica/universitária |
-| **ICMP** | Ping a servidores externos (e.g., 8.8.8.8) |
-| **TCP** | Navegação web (HTTP na porta 80, HTTPS na 443) |
-| **DNS** | Queries reais ao resolver configurado (resolução de domínios) |
-| **DHCP** | Ciclo DORA ao ligar a interface Wi-Fi (atribuição de IP pelo AP) |
-| **HTTP** | Requests GET/POST a servidores web reais |
-| **HTTPS/TLS** | Detectado pela porta 443 (conteúdo cifrado, não decifrado) |
-| **IPv6 / ICMPv6** | Neighbor Discovery, Router Advertisement (tráfego link-local) |
-
-### Diferenças entre CORE e Interface Real
-
-| Aspeto | CORE (Parte A) | Interface Real (Parte B) |
-|---|---|---|
-| Volume de tráfego | Controlado (apenas o que geramos) | Elevado (tráfego background do SO, updates, telemetria) |
-| DHCP | Requer configuração manual do servidor | Automático ao associar ao AP |
-| DNS | Requer servidor local ou NAT | Resolver real (ISP ou público) |
-| HTTPS | Raro (ambiente controlado) | Dominante (>80% do tráfego web moderno) |
-| IPv6 | Opcional | Frequente (link-local, NDP, Router Solicitation) |
-| Fragmentação | Fácil de provocar (`ping -s 4000`) | Rara (Path MTU Discovery activo) |
-| ARP Gratuitous | Não observado | Possível ao reconectar à rede |
-
-### Obstáculos Encontrados na Interface Real
-
-1. **Volume de ruído**: A interface real captura tráfego de fundo (mDNS, SSDP, ARP broadcasts de toda a rede), que exige o uso de filtros para isolar os protocolos de interesse.
-2. **Permissões**: Necessidade de `sudo` para acesso a raw sockets — requer que o utilizador tenha privilégios de administrador.
-3. **HTTPS dominante**: A maior parte do tráfego web real é cifrado (TLS), limitando a análise de conteúdo HTTP apenas à porta 80 (não-cifrado).
-4. **Wi-Fi sem modo monitor**: Sem modo monitor, o sniffer só vê tráfego da BSS associada destinado ao host. Frames 802.11 de gestão não são visíveis.
-
-[INSERIR PRINT: Terminal com captura na interface real (wlan0 ou enp3s0) mostrando tráfego DNS, HTTPS e ARP reais]
-
-[INSERIR PRINT: Resumo final de uma captura na interface real mostrando distribuição de protocolos (TCP/HTTPS dominante)]
+[INSERIR PRINT: consola live com tags REQUEST/REPLY e alertas TTL]
+[INSERIR PRINT: excerto de `captura.csv` e `captura.jsonl`]
 
 ---
 
-## 8. Persistência de Dados (Logging)
+## 9. Limitações e trabalho futuro
 
-O módulo `logger.py` suporta três formatos de exportação, todos com **flush imediato** por pacote:
+### 9.1 Limitações
 
-| Formato | Flag | Ficheiro | Características |
-|---|---|---|---|
-| Texto | `--log txt` | `captura.txt` | Legível por humanos, cabeçalho + campos críticos em linha secundária |
-| CSV | `--log csv` | `captura.csv` | Todas as colunas do schema (31 campos), importável para folhas de cálculo |
-| JSON Lines | `--log json` | `captura.jsonl` | Um objeto JSON completo por linha, cabeçalho com metadados |
+- Tráfego HTTPS/TLS não é decifrado (sem chaves de sessão).
+- A captura live depende de privilégios de administrador.
+- Em rede comutada, a visibilidade limita-se ao tráfego local e broadcast/multicast.
+- `DNSTracker` e `HTTPTracker` não implementam garbage collection agressiva de pendências.
+- Em Wi-Fi sem modo monitor, não há visibilidade total de frames 802.11.
 
-### Resistência a Crash
+### 9.2 Trabalho futuro
 
-Cada pacote é escrito e `flush()`-ado imediatamente. Isto garante que:
-- Uma interrupção forçada (`SIGKILL`, `Ctrl+C`) não resulta em perda de dados.
-- O ficheiro é válido até ao último pacote registado antes da interrupção.
-- Não há buffering em memória que se perca.
-
-```mermaid
-stateDiagram-v2
-    [*] --> CLOSED
-    CLOSED --> SYN_SENT: SYN (cliente)
-    SYN_SENT --> SYN_RECEIVED: SYN+ACK (servidor)
-    SYN_RECEIVED --> ESTABLISHED: ACK
-    ESTABLISHED --> TRANSFER: Dados
-    TRANSFER --> FIN_WAIT: FIN
-    FIN_WAIT --> CLOSED: FIN+ACK / ACK
-    ESTABLISHED --> CLOSED: RST
-```
-[INSERIR PRINT: Excerto de um ficheiro `.csv` ou `.jsonl` gerado pelo sniffer]
-
----
-
-## 9. O Que NÃO Foi Implementado e Limitações
-
-### 9.1 TLS/HTTPS
-
-O tráfego HTTPS é **detectado pela porta 443** e reportado no diagnóstico final (`[INFO] Tráfego HTTPS detectado — payloads cifrados (TLS)`), mas o conteúdo **não é decifrado**. O campo `payload_size` reflete apenas o tamanho do segmento cifrado.
-
-**Justificação**: Um sniffer passivo, por definição, não possui as chaves de sessão TLS necessárias para decifrar o tráfego. A implementação de decifração exigiria acesso ao key log do browser (SSLKEYLOGFILE) ou técnicas de MITM, ambas fora do âmbito de um sniffer passivo.
-
-### 9.2 Garbage Collection de DNS/HTTP Pendentes
-
-O `DNSTracker` e o `HTTPTracker` **não implementam GC** de pedidos pendentes sem resposta. Uma Query DNS sem Response correspondente permanece em memória até ao fim da captura. Em capturas longas (horas) com elevado volume de DNS ou HTTP, este comportamento pode resultar em acumulação progressiva de memória.
-
-Ao contrário do `FragmentTracker` (que tem GC por timeout de 30s), estes trackers priorizam a simplicidade e a não-perda de correlações tardias (um Response pode chegar segundos depois do Query em redes lentas).
-
-### 9.3 Ausência de Injeção de Pacotes
-
-O sniffer **não gera, não reenvia e não modifica pacotes**. Não é uma ferramenta ofensiva. Não implementa ARP spoofing, port scanning, TCP RST injection ou qualquer técnica ativa.
-
-### 9.4 Limitações de Visibilidade
-
-- Em redes **comutadas** (switches L2), o sniffer no end-host só vê tráfego destinado a si próprio e broadcasts/multicasts — não vê tráfego entre outros hosts.
-- Sem modo **monitor** em Wi-Fi, apenas vê tráfego da BSS associada.
-
-### 9.5 Justificação Geral das Prioridades
-
-O foco do desenvolvimento foi a **robustez da inspeção de estado do TCP** (máquina completa e direcional) e do **ciclo DORA do DHCP** (emparelhamento por `xid`), priorizando estabilidade e corretude sobre a complexidade adicional de:
-- Decifração TLS (exigiria dependências externas e chaves de sessão);
-- GC universal de todos os trackers (trade-off entre memória e possível perda de correlações legítimas tardias);
-- Tracking exaustivo de camada aplicacional (HTTP/2, gRPC, WebSockets).
+- Interface gráfica para exploração de sessões e eventos.
+- Suporte adicional a protocolos aplicacionais (ex.: HTTP/2 e metadata TLS mais detalhada).
+- Deteção automática de anomalias (scans, retransmissões excessivas, loops).
+- Exportação de métricas e gráficos temporais.
+- Otimizações de desempenho para capturas longas com alto volume.
 
 ---
 
 ## 10. Conclusão
 
-O desenvolvimento deste Packet Sniffer Passivo proporcionou uma compreensão profunda de múltiplos aspetos de redes de computadores:
+O projeto cumpriu os objetivos definidos: captura passiva em tempo real e offline, parsing multicamada, filtragem robusta, correlação stateful e exportação estruturada de resultados.
 
-### Dificuldades Encontradas
+A arquitetura modular permitiu separar com clareza as responsabilidades de captura, parsing, filtro, logging e análise, reduzindo acoplamento e facilitando manutenção. A validação em CORE e em interface real confirmou o funcionamento para ARP, ICMP, TCP, UDP, DNS, DHCP e HTTP nos cenários previstos.
 
-1. **Parsing raw de headers**: A interpretação manual de flags TCP (bitmask de 8 flags), a decodificação de opções TCP (MSS, Window Scale, SACK, Timestamps) e a extração de campos de fragmentação IPv4/IPv6 revelaram a complexidade que ferramentas como o Wireshark abstraem.
-
-2. **Direção do tráfego**: Distinguir cliente de servidor numa sessão TCP a partir de pacotes capturados em modo passivo exigiu a fixação de papéis no momento do SYN e a verificação consistente em cada transição.
-
-3. **Emparelhamento assíncrono**: Correlacionar pedidos e respostas (DNS, ARP, ICMP) quando os pacotes podem chegar fora de ordem ou nunca chegar (perdas) obrigou a decisões de design sobre timeouts e tolerância.
-
-4. **Espaço de sequência TCP**: O wrap-around do número de sequência de 32 bits e a necessidade de guardas contra deltas irrealistas (>1GB) são subtilezas que só se descobrem com tráfego real.
-
-### Ganho Didático
-
-Implementar manualmente o tracking de handshakes TCP, o ciclo DORA do DHCP e a reassemblagem de fragmentos IP — em vez de depender de bibliotecas de alto nível — solidificou conceitos que de outra forma permaneceriam abstratos:
-
-- O three-way handshake **não é simétrico**: cada lado tem um papel diferente.
-- A fragmentação IP é um problema **end-to-end**, resolvido apenas no destino final.
-- O DHCP usa **broadcast** porque o cliente ainda não tem endereço IP — um paradoxo que se resolve com MAC e Transaction IDs.
-- A filtragem de rede opera em **múltiplas camadas** com diferentes capacidades (BPF no kernel vs lógica Python no user-space).
-
-O resultado é uma ferramenta funcional, modular e extensível que demonstra os princípios fundamentais de análise de tráfego de rede sem comprometer a ética de operação — capturando apenas o que legitimamente nos pertence observar.
+Apesar das limitações inerentes a um sniffer passivo (nomeadamente conteúdo cifrado em TLS e visibilidade parcial em redes comutadas), a solução demonstra relevância técnica e pedagógica, consolidando conceitos de protocolos, pilha de rede e observabilidade de tráfego em ambiente real.
 
 ---
 
-## Exemplos de Execução
+**Ficheiros do projeto:**
 
-```bash
-# Captura live com análise stateful (requer root)
-sudo python3 main.py -i eth0 --analyze
-
-# Análise offline de pcap com exportação CSV
-sudo python3 main.py --pcap captura.pcap --analyze --log csv --output sessao
-
-# Filtragem: apenas DNS, 50 pacotes
-sudo python3 main.py -i eth0 --proto DNS --analyze -n 50
-
-# Excluir TCP (e HTTP), exportar JSON
-sudo python3 main.py -i eth0 --exclude-proto TCP --log json --output sem_tcp
-```
-
-[INSERIR PRINT: Terminal com execução completa mostrando output live + diagramas + resumo final]
-
----
-
-**Ficheiros do projecto:**
-
-```
+```text
 src/
-├── main.py           # Ponto de entrada (CLI, argparse)
-├── capture.py        # Motor de captura (live e pcap)
-├── parser_proto.py   # Extração de campos L2-L7
-├── filters.py        # Filtragem (BPF + Python)
-├── analyzer.py       # Tracking stateful + diagramas + resumo
-└── logger.py         # Exportação para TXT/CSV/JSONL
+├── main.py           # CLI e inicialização
+├── capture.py        # Motor de captura live/pcap
+├── parser_proto.py   # Parsing multicamada
+├── filters.py        # Filtros BPF + Python
+├── analyzer.py       # Correlação stateful e resumo
+└── logger.py         # Exportação TXT/CSV/JSONL
 ```

@@ -1,5 +1,6 @@
 import argparse
 import sys
+from pathlib import Path
 from scapy.all import get_if_list, get_if_addr, get_if_hwaddr, conf
 
 from capture import CaptureEngine
@@ -40,24 +41,26 @@ Exemplos:
   sudo python3 main.py -i eth0 --proto TCP --analyze
   sudo python3 main.py -i eth0 --ip 192.168.1.1 --log csv
   sudo python3 main.py -i eth0 --exclude-proto TCP
-  sudo python3 main.py --pcap ficheiro.pcap --analyze
+    sudo python3 main.py --pcap ficheiro.pcap --analyze
   sudo python3 main.py --list-ifaces
         """
     )
 
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("-i", "--iface",     help="Interface de rede (ex: eth0, wlan0)")
-    src.add_argument("--pcap",            help="Ficheiro .pcap para analise offline")
+    src.add_argument("--pcap",            help="Ficheiro .pcap para análise offline")
     src.add_argument("--list-ifaces",     action="store_true",
                      help="Listar interfaces disponiveis e sair")
 
     parser.add_argument("--ip",    help="Filtrar por IP (origem ou destino)")
+    parser.add_argument("--src-ip", help="Filtrar apenas por IP de origem")
+    parser.add_argument("--dst-ip", help="Filtrar apenas por IP de destino")
     parser.add_argument("--mac",   help="Filtrar por MAC (origem ou destino)")
     parser.add_argument("--proto", help="Filtrar por protocolo: ARP, ICMP, TCP, UDP, IPv4, IPv6, HTTP, DNS, DHCP")
     parser.add_argument("--port",  type=int, help="Filtrar por porto (origem ou destino)")
 
     parser.add_argument("--exclude-ip",    help="Ignorar pacotes deste IP")
-    parser.add_argument("--exclude-proto", help="Ignorar pacotes deste protocolo")
+    parser.add_argument("--exclude-proto", help="Ignorar pacotes destes protocolos (separa multiplos com virgula, ex: TCP,IPv6)")
 
     parser.add_argument("-n", "--count", type=int, default=0,
                         help="Nr de pacotes a capturar (0 = infinito)")
@@ -127,8 +130,17 @@ def main():
     if args.iface:
         validar_iface(args.iface)
 
+    if args.pcap:
+        pcap_path = Path(args.pcap)
+        if not pcap_path.is_file():
+            print(f"\n[ERRO] Ficheiro pcap nao encontrado: {args.pcap}")
+            sys.exit(1)
+        args.pcap = str(pcap_path)
+
     filters = FilterManager(
         ip=args.ip,
+        src_ip=args.src_ip,
+        dst_ip=args.dst_ip,
         mac=args.mac,
         proto=args.proto,
         port=args.port,

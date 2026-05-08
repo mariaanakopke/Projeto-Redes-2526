@@ -1,0 +1,12 @@
+# Packet Sniffer Log - 2026-05-08T01:08:14.201747
+# Timestamp      Iface    Proto    Src                  Dst                   TTL   Size  Info
+--------------------------------------------------------------------------------------------------------------
+  01:08:14.900   wlp0s20f3 ICMP     192.168.1.104        8.8.8.8                64    98B  ICMP Echo Request id=26590 seq=5
+    [icmp_id=26590 seq=5]
+  01:08:14.927   wlp0s20f3 ICMP     8.8.8.8              192.168.1.104         117    98B  ICMP Echo Reply id=26590 seq=5
+    [icmp_id=26590 seq=5]
+  01:08:15.901   wlp0s20f3 ICMP     192.168.1.104        8.8.8.8                64    98B  ICMP Echo Request id=26590 seq=6
+    [icmp_id=26590 seq=6]
+  01:08:15.932   wlp0s20f3 ICMP     8.8.8.8              192.168.1.104         117    98B  ICMP Echo Reply id=26590 seq=6
+    [icmp_id=26590 seq=6]
+  01:08:16.431   wlp0s20f3 IPv6     fe80::fe77:7bff:fea1:2262 ff02::1               255   198B  IPv6 nh=58 hlim=255

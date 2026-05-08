@@ -43,82 +43,41 @@ class PacketParser:
 
     def _empty_record(self, timestamp: str, iface: str, pkt) -> dict:
         return {
-            "timestamp":    timestamp,
-            "iface":        iface,
-            "size":         len(pkt),
-            "payload_size": 0,
-            "proto":        "UNKNOWN",
-            "src_mac":      None,
-            "dst_mac":      None,
-            "src_ip":       None,
-            "dst_ip":       None,
-            "src_port":     None,
-            "dst_port":     None,
-            "ttl":          None,
-            "ttl_exceeded": False,
-            "flags":        None,
-            "tcp_seq":      None,
-            "tcp_ack":      None,
-            "tcp_window":   None,
-            "tcp_options":  None,
-            "frag_id":      None,
-            "frag_offset":  None,
-            "frag_mf":      False,
-            "frag_df":      False,
-            "icmp_type":    None,
-            "icmp_code":    None,
-            "icmp_id":      None,
-            "icmp_seq":     None,
-            "dns_id":       None,
-            "dns_qr":       None,
-            "dns_rcode":    None,
-            "dns_name":     None,
-            "dns_qtype":    None,
-            "dhcp_xid":     None,
-            "dhcp_msg_type":None,
-            "dhcp_yiaddr":  None,
-            "dhcp_chaddr":  None,
-            "dhcp_siaddr":  None,
-            "summary":      "",
-            "raw_layers":   [],
+            "timestamp": timestamp, "iface": iface, "size": len(pkt),
+            "payload_size": 0, "proto": "UNKNOWN",
+            "src_mac": None, "dst_mac": None, "src_ip": None, "dst_ip": None,
+            "src_port": None, "dst_port": None, "ttl": None, "ttl_exceeded": False,
+            "flags": None, "tcp_seq": None, "tcp_ack": None, "tcp_window": None,
+            "tcp_options": None, "frag_id": None, "frag_offset": None,
+            "frag_mf": False, "frag_df": False, "icmp_type": None,
+            "icmp_code": None, "icmp_id": None, "icmp_seq": None,
+            "dns_id": None, "dns_qr": None, "dns_rcode": None,
+            "dns_name": None, "dns_qtype": None,
+            "dhcp_xid": None, "dhcp_msg_type": None, "dhcp_yiaddr": None,
+            "dhcp_chaddr": None, "dhcp_siaddr": None,
+            "summary": "", "raw_layers": [],
         }
 
     def parse(self, pkt, timestamp: str, iface: str) -> dict:
-        record = self._empty_record(timestamp, iface, pkt)
-        record["raw_layers"] = [type(l).__name__ for l in pkt.layers()]
-
-        if pkt.haslayer(Ether):
-            self._parse_ethernet(pkt, record)
-
-        if pkt.haslayer(ARP):
-            self._parse_arp(pkt, record)
-
+        record = self._empty_record(timestamp, iface, pkt); record["raw_layers"] = [type(l).__name__ for l in pkt.layers()]
+        if pkt.haslayer(Ether): self._parse_ethernet(pkt, record)
+        if pkt.haslayer(ARP): self._parse_arp(pkt, record)
         elif pkt.haslayer(IP):
-            self._parse_ip(pkt, record)
-            if pkt.haslayer(ICMP):
-                self._parse_icmp(pkt, record)
-            elif pkt.haslayer(TCP):
-                self._parse_tcp(pkt, record)
-            elif pkt.haslayer(UDP):
-                self._parse_udp(pkt, record)
-
+            self._parse_ipv4(pkt, record)
+            if pkt.haslayer(ICMP): self._parse_icmp(pkt, record)
+            elif pkt.haslayer(TCP): self._parse_tcp(pkt, record)
+            elif pkt.haslayer(UDP): self._parse_udp(pkt, record)
         elif pkt.haslayer(IPv6):
             self._parse_ipv6(pkt, record)
-            if _HAS_ICMPV6:
-                if pkt.haslayer(ICMPv6EchoRequest) or pkt.haslayer(ICMPv6EchoReply):
-                    self._parse_icmpv6(pkt, record)
-                elif pkt.haslayer(ICMPv6DestUnreach):
-                    self._parse_icmpv6_error(pkt, record, 1, "Dest Unreach")
-                elif pkt.haslayer(ICMPv6TimeExceeded):
-                    self._parse_icmpv6_error(pkt, record, 3, "Time Exceeded")
-            elif pkt.haslayer(TCP):
-                self._parse_tcp(pkt, record)
-            elif pkt.haslayer(UDP):
-                self._parse_udp(pkt, record)
-
-        if pkt.haslayer(Raw):
-            record["payload_size"] = len(pkt[Raw].load)
-
+            if _HAS_ICMPV6 and (pkt.haslayer(ICMPv6EchoRequest) or pkt.haslayer(ICMPv6EchoReply)):
+                self._parse_icmpv6(pkt, record)
+            elif _HAS_ICMPV6 and pkt.haslayer(ICMPv6DestUnreach):
+                self._parse_icmpv6_error(pkt, record, 1, "Dest Unreach")
+            elif _HAS_ICMPV6 and pkt.haslayer(ICMPv6TimeExceeded):
+                self._parse_icmpv6_error(pkt, record, 3, "Time Exceeded")
+            elif pkt.haslayer(TCP): self._parse_tcp(pkt, record)
+            elif pkt.haslayer(UDP): self._parse_udp(pkt, record)
+        if pkt.haslayer(Raw): record["payload_size"] = len(pkt[Raw].load)
         return record
 
 
@@ -137,7 +96,7 @@ class PacketParser:
         rec["summary"] = f"ARP {op}: who has {arp.pdst}? tell {arp.psrc}"
 
 
-    def _parse_ip(self, pkt, rec):
+    def _parse_ipv4(self, pkt, rec):
         ip = pkt[IP]
         rec["src_ip"]      = ip.src
         rec["dst_ip"]      = ip.dst

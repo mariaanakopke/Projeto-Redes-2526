@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 from scapy.all import sniff, rdpcap
 from parser_proto import PacketParser
 
@@ -100,7 +101,11 @@ class CaptureEngine:
                 raise
 
     def _read_pcap(self):
-        packets = rdpcap(self.pcap_file)
+        pcap_path = Path(self.pcap_file)
+        if not pcap_path.is_file():
+            raise FileNotFoundError(f"Ficheiro pcap nao encontrado: {self.pcap_file}")
+
+        packets = rdpcap(str(pcap_path))
         for pkt in packets:
             self._process(pkt)
 
